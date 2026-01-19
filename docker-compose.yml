@@ -1,0 +1,16 @@
+services:
+  kloset-db:
+    image: postgres:17-alpine
+    container_name: kloset-keeper-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "${DB_PORT}:5432"
+    volumes:
+      - kloset-db-data:/var/lib/postgresql/data
+
+volumes:
+  kloset-db-data:
