@@ -16,7 +16,7 @@ export const DRIZZLE = 'DRIZZLE_CONNECTION';
             inject: [ConfigService],
             useFactory: (configService: ConfigService) => {
                 const pool = new Pool({
-                    connectionString: configService.get<string>('DATABASE_URL'),
+                    connectionString: `postgresql://${configService.get('DB_USER')}:${configService.get('DB_PASSWORD')}@${configService.get('DB_HOST')}:${configService.get('DB_PORT')}/${configService.get('DB_NAME')}`,
                 });
                 return drizzle(pool, { schema });
             },

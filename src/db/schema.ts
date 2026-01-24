@@ -1,0 +1,1 @@
+export * from '../modules/locations/schemas/location.schema';
