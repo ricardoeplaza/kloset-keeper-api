@@ -3,6 +3,9 @@
 /node_modules
 /build
 
+# media directory
+/media
+
 # Logs
 logs
 *.log
