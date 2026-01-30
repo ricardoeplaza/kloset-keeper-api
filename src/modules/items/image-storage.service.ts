@@ -9,6 +9,9 @@ import { fileTypeFromBuffer } from 'file-type'; // Para validación binaria
 import sharp from 'sharp';
 import { uuidv7 } from 'uuidv7';
 
+import { InjectQueue, OnQueueEvent, QueueEventsHost, QueueEventsListener } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
+
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -17,40 +20,42 @@ import * as schema from './schemas/images.schema';
 export type Image = InferSelectModel<typeof schema.images>;
 
 @Injectable()
-export class ImageStorageService {
+@QueueEventsListener('image-processing')
+export class ImageStorageService extends QueueEventsHost {
   private readonly THUMB_PATH: string = 'thumbnails';
   private readonly IMAGES_PATH: string = 'images';
 
   private readonly baseUploadPath: string;
   private readonly directoryLevels: number;
-  private readonly imageWidth: number;
+  private readonly mainWidth: number;
   private readonly thumbWidth: number;
 
   constructor(
     @Inject(DRIZZLE) private db: NodePgDatabase<typeof schema>,
+    @InjectQueue('image-processing') private readonly imageQueue: Queue,
     private configService: ConfigService
   ) {
+    super();
     this.baseUploadPath = this.configService.get<string>('UPLOAD_LOCATION', './media');
     this.directoryLevels = this.configService.get<number>('UPLOAD_DIRECTORY_LEVELS', 2);
-    this.imageWidth = Number(this.configService.get<number>('IMAGE_WIDTH', 1920));
-    this.thumbWidth = Number(this.configService.get<number>('THUMB_WIDTH', 300));
+    this.mainWidth = this.configService.get<number>('IMAGE_WIDTH', 1920);
+    this.thumbWidth = this.configService.get<number>('THUMB_WIDTH', 300);
   }
 
   /**
    * Internal logic to handle file validation, hashing, and physical storage
    */
-  private async processImage(file: Express.Multer.File) {
+  private async processImage(id: string, file: Express.Multer.File) {
+    const imageBuffer = file.buffer;
     // 1. Binary validation for security purposes
-    const type = await fileTypeFromBuffer(file.buffer);
+    const type = await fileTypeFromBuffer(imageBuffer);
     const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp'];
-
     if (!type || !allowedMimeTypes.includes(type.mime)) {
       throw new BadRequestException('Invalid file type. Only JPG, PNG and WebP are allowed.');
     }
 
     try {
       // 2. Path definition and sharding logic
-      const imageBuffer = file.buffer;
       const fileHash = this.generateFileHash(imageBuffer);
       const shardPath = this.getShardedPath(fileHash);
 
@@ -75,30 +80,33 @@ export class ImageStorageService {
           .toFile(thumbFilePath),
 
         sharp(imageBuffer)
-          .resize({ width: this.imageWidth, withoutEnlargement: true })
-          .webp({ quality: 80 })
+          .resize({ width: this.mainWidth, withoutEnlargement: true })
+          .webp({ quality: 95, lossless: false })
           .toFile(mainFilePath)
       ]);
 
       /**
-       * 5. TODO: Queue heavy tasks for background worker (AI Inference + Final Optimization)
-       * This stage will be implemented in a future phase.
-       * * await this.imageQueue.add('process-background-removal', {
-       * imageId: newImage.id,
-       * buffer: file.buffer,
-       * fileHash: fileHash
-       * });
+       * 5. Queue heavy tasks for background worker (AI Inference + Final Optimization)
        */
+
+      await this.imageQueue.add('process-background-removal', {
+        imageId: id,
+        mainFilePath,
+        mainWidth: this.mainWidth,
+        thumbFilePath,
+        thumbWidth: this.thumbWidth
+      }, {
+        removeOnComplete: true,
+      });
 
       return {
         fileHash,
         thumbFilePath,
-        mainFilePath
+        mainFilePath,
       };
 
     } catch (error) {
-      console.error('Image Processing Error:', error);
-      throw new InternalServerErrorException('Failed to process or store the physical image');
+      throw new InternalServerErrorException(error, 'Image Processing Error');
     }
   }
 
@@ -118,12 +126,13 @@ export class ImageStorageService {
    * Orchestrates the creation of a new image record
    */
   async saveFile(file: Express.Multer.File): Promise<Image> {
+    const uuidImage = uuidv7();
     // 1. Process and store new physical files
-    const { fileHash, thumbFilePath, mainFilePath } = await this.processImage(file);
+    const { fileHash, thumbFilePath, mainFilePath } = await this.processImage(uuidImage, file);
 
     // 2. Database persistence
     const [newImage] = await this.db.insert(schema.images).values({
-      id: uuidv7(),
+      id: uuidImage,
       hash: fileHash,
       thumbPath: thumbFilePath,
       storagePath: mainFilePath,
@@ -147,7 +156,7 @@ export class ImageStorageService {
     }
 
     // 2. Process and store new physical files
-    const { fileHash, thumbFilePath, mainFilePath } = await this.processImage(file);
+    const { fileHash, thumbFilePath, mainFilePath } = await this.processImage(imageId, file);
 
     // 3. Update existing database record
     const [updated] = await this.db
@@ -197,5 +206,32 @@ export class ImageStorageService {
     }
 
     return true;
+  }
+
+  @OnQueueEvent('completed')
+  async onJobCompleted({ jobId, returnvalue }: { jobId: string; returnvalue: any }) {
+    const { imageId } = returnvalue;
+    await this.db
+      .update(schema.images)
+      .set({ status: 'ready' })
+      .where(eq(schema.images.id, imageId));
+
+    console.log(`IA Job ${jobId} finished.`);
+  }
+
+  @OnQueueEvent('failed')
+  async onJobFailed({ jobId, failedReason }: { jobId: string; failedReason: any }) {
+    // 1. Get the full job object using the jobId
+    const job = await this.imageQueue.getJob(jobId);
+
+    if (job) {
+      // 2. Access the original data we sent at the beginning
+      const { imageId } = job.data;
+
+      await this.db
+        .update(schema.images)
+        .set({ status: 'failed', })
+        .where(eq(schema.images.id, imageId));
+    }
   }
 }
