@@ -5,19 +5,14 @@ export class CreateImageDto {
   @IsNotEmpty()
   hash: string;
 
-  @IsUUID()
-  @IsNotEmpty()
-  userId: string;
-
   @IsString()
   @IsNotEmpty()
-  thumbPath: string; // El path del thumb "raw" inicial
+  thumbPath: string;
 
   @IsString()
   @IsOptional()
-  storagePath?: string; // Opcional al inicio, lo llenará el worker
+  storagePath?: string;
 
   @IsUUID()
-  @IsOptional()
-  itemId?: string; // Opcional si quieres vincularlo después
+  itemId: string;
 }

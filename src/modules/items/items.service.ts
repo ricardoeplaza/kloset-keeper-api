@@ -1,10 +1,11 @@
-import { Inject, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, InternalServerErrorException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { uuidv7 } from 'uuidv7';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DRIZZLE } from 'src/db/drizzle.module';
 
+import { RequestContext } from 'src/infra/context/request-context';
 import { CreateItemDto } from './dto/create-item.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
 import { ImageStorageService } from './image-storage.service';
@@ -13,7 +14,7 @@ import * as schema from './schemas/items.schema';
 @Injectable()
 export class ItemsService {
   constructor(
-    @Inject(DRIZZLE) private db: NodePgDatabase<typeof schema>,
+    @Inject(DRIZZLE) private _db: NodePgDatabase<typeof schema>,
     private readonly imageStorageService: ImageStorageService
   ) { }
 
@@ -21,18 +22,24 @@ export class ItemsService {
    * Creates a new item and its associated image record
    */
   async create(createItemDto: CreateItemDto, file: Express.Multer.File) {
+    const userId = RequestContext.getRequiredUserId();
+
     // 1. Process and save the physical image first
     const itemImage = await this.imageStorageService.saveFile(file);
 
     try {
-      // 2. Attempt to persist the item in Postgres
-      const [newItem] = await this.db
+      // 2. Prepare data for insertion (Explicit mapping)
+      const insertData = {
+        ...createItemDto,
+        id: uuidv7(),
+        imageId: itemImage.id,
+        ownerId: userId,
+      };
+
+      // 3. Attempt to persist the item in Postgres
+      const [newItem] = await this._db
         .insert(schema.items)
-        .values({
-          ...createItemDto,
-          id: uuidv7(),
-          image: itemImage.id
-        })
+        .values(insertData)
         .returning();
 
       return newItem;
@@ -47,12 +54,19 @@ export class ItemsService {
   }
 
   async findAll() {
-    return await this.db.select().from(schema.items);
+    const userId = RequestContext.getRequiredUserId();
+    if (!userId) throw new UnauthorizedException();
+    return await this._db.select().from(schema.items).where(eq(schema.items.ownerId, userId));
   }
 
   async findOne(id: string) {
-    const item = await this.db.query.items.findFirst({
-      where: eq(schema.items.id, id),
+    const userId = RequestContext.getRequiredUserId();
+
+    const item = await this._db.query.items.findFirst({
+      where: and(
+        eq(schema.items.id, id),
+        eq(schema.items.ownerId, userId)
+      )
     });
 
     if (!item) throw new NotFoundException(`Item with id ${id} not found`);
@@ -62,32 +76,41 @@ export class ItemsService {
   /**
    * Updates item metadata and optionally replaces the associated image
    */
-  async update(id: string, updateItemDto: UpdateItemDto, file?: Express.Multer.File) {
+  async update(itemId: string, updateItemDto: UpdateItemDto, file?: Express.Multer.File) {
+    const userId = RequestContext.getRequiredUserId();
     // 1. Handle image replacement if a new file is provided
     if (file) {
-      const item = await this.db.query.items.findFirst({
-        where: eq(schema.items.id, id),
+      const item = await this._db.query.items.findFirst({
+        where: and(
+          eq(schema.items.id, itemId),
+          eq(schema.items.ownerId, userId)
+        )
       });
 
-      if (!item) throw new NotFoundException(`Item with id ${id} not found`);
+      if (!item) throw new NotFoundException(`Item with id ${itemId} not found`);
 
       // If the item has an associated image record, update it
-      if (item.image) {
-        await this.imageStorageService.updateFile(item.image, file);
+      if (file) {
+       await this.imageStorageService.updateFile(item.imageId, file);
       }
     }
 
     // 2. Update item textual data
-    const [updatedItem] = await this.db
+    const [updatedItem] = await this._db
       .update(schema.items)
       .set({
         ...updateItemDto,
         updatedAt: new Date()
       })
-      .where(eq(schema.items.id, id))
+      .where(
+        and(
+          eq(schema.items.id, itemId),
+          eq(schema.items.ownerId, userId)
+        )
+      )
       .returning();
 
-    if (!updatedItem) throw new NotFoundException(`Item with id ${id} not found`);
+    if (!updatedItem) throw new NotFoundException(`Item with id ${itemId} not found`);
 
     return updatedItem;
   }
@@ -96,24 +119,28 @@ export class ItemsService {
    * Removes an item by deleting its image. 
    * Database CASCADE should handle the item deletion.
    */
-  async remove(id: string) {
+  async remove(itemId: string) {
+    const userId = RequestContext.getRequiredUserId();
     // 1. Retrieve the item to get the image reference
-    const item = await this.db.query.items.findFirst({
-      where: eq(schema.items.id, id),
+    const item = await this._db.query.items.findFirst({
+      where: and(
+        eq(schema.items.id, itemId),
+        eq(schema.items.ownerId, userId)
+      )
     });
 
     if (!item) {
-      throw new NotFoundException(`Item with ID ${id} not found`);
+      throw new NotFoundException(`Item with ID ${itemId} not found`);
     }
 
     // 2. Delegate removal to ImageStorageService. 
     // If your schema has ON DELETE CASCADE on the image reference, the item is removed automatically.
-    const removeResult = await this.imageStorageService.removeFile(item.image);
+    const removeResult = await this.imageStorageService.removeFile(item.imageId);
 
     if (removeResult) {
       return { deleted: true };
     }
 
-    throw new InternalServerErrorException(`Could not remove item ${id}`);
+    throw new InternalServerErrorException(`Could not remove item ${itemId}`);
   }
 }

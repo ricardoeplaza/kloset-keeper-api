@@ -1,87 +1,95 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { and, eq, sql } from 'drizzle-orm';
+import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { uuidv7 } from 'uuidv7';
 
-import { eq, sql } from 'drizzle-orm';
-import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DRIZZLE } from 'src/db/drizzle.module';
-
+import { RequestContext } from 'src/infra/context/request-context';
 import { CreateLocationDto } from './dto/create-location.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
 import * as schema from './schemas/location.schema';
 
-
 @Injectable()
 export class LocationsService {
   constructor(
-    @Inject(DRIZZLE) private db: NodePgDatabase<typeof schema>
+    @Inject(DRIZZLE) private readonly db: NodePgDatabase<typeof schema>
   ) { }
 
   async create(location: CreateLocationDto) {
+    const userId = RequestContext.getRequiredUserId();
     const [newLocation] = await this.db
       .insert(schema.locations)
-      .values({ id: uuidv7(), ...location })
+      .values({
+        ...location,
+        id: uuidv7(),
+        ownerId: userId,
+      })
       .returning();
     return newLocation;
   }
 
   async findAll() {
-    return await this.db.query.locations.findMany();
+    const userId = RequestContext.getRequiredUserId();
+    return this.db.query.locations.findMany({
+      where: eq(schema.locations.ownerId, userId),
+    });
   }
 
   async findOne(id: string) {
-    const [result] = await this.db
-      .select()
-      .from(schema.locations)
-      .where(eq(schema.locations.id, id));
+    const userId = RequestContext.getRequiredUserId();
+    const result = await this.db.query.locations.findFirst({
+      where: and(
+        eq(schema.locations.id, id),
+        eq(schema.locations.ownerId, userId)
+      ),
+    });
 
     if (!result) {
       throw new NotFoundException(`Location with ID ${id} not found`);
     }
+
     return result;
   }
 
   async update(id: string, updateLocationDto: UpdateLocationDto) {
-    // Check if the location exists first
-    await this.findOne(id);
+    const userId = RequestContext.getRequiredUserId();
+
+    // 1. Verificar existencia y propiedad
+    const location = await this.findOne(id);
 
     const { parentId } = updateLocationDto;
 
-    if (parentId) {
-      // 1. Cannot be its own parent
-      if (id === parentId) {
-        throw new BadRequestException('A location cannot be its own parent');
-      }
-
-      // 2. Validate target parent exists
-      const targetParent = await this.db
-        .select()
-        .from(schema.locations)
-        .where(eq(schema.locations.id, parentId));
-
-      if (targetParent.length === 0) {
-        throw new NotFoundException(`Target parent location with ID ${parentId} not found`);
-      }
-
-      // 3. New parent cannot be a descendant (prevent cycles)
-      const isRecursive = await this.checkIsDescendant(id, parentId);
-      if (isRecursive) {
-        throw new BadRequestException('Invalid hierarchy: target parent is a descendant');
-      }
+    // 2. Validación jerárquica solo si cambia el parentId
+    if (parentId !== undefined && parentId !== location.parentId) {
+      await this.validateHierarchy(id, parentId, userId);
     }
 
+    // 3. Ejecutar actualización
     const [updated] = await this.db
       .update(schema.locations)
       .set(updateLocationDto)
-      .where(eq(schema.locations.id, id))
+      .where(
+        and(
+          eq(schema.locations.id, id),
+          eq(schema.locations.ownerId, userId)
+        )
+      )
       .returning();
 
     return updated;
   }
 
   async remove(id: string) {
+    const userId = RequestContext.getRequiredUserId();
+
     const [deleted] = await this.db
       .delete(schema.locations)
-      .where(eq(schema.locations.id, id))
+      .where(
+        and(
+          eq(schema.locations.id, id),
+          eq(schema.locations.ownerId, userId)
+        )
+      )
       .returning();
 
     if (!deleted) {
@@ -90,75 +98,21 @@ export class LocationsService {
     return deleted;
   }
 
-  private async checkIsDescendant(ancestorId: string, potentialDescendantId: string): Promise<boolean> {
-    const query = sql`
-      WITH RECURSIVE parent_search AS (
-        SELECT parent_id 
-        FROM ${schema.locations} 
-        WHERE id = ${potentialDescendantId}
-        
-        UNION ALL
-        
-        SELECT l.parent_id
-        FROM ${schema.locations} l
-        INNER JOIN parent_search ps ON l.id = ps.parent_id
-        WHERE ps.parent_id IS NOT NULL
-      )
-      SELECT EXISTS (
-        SELECT 1 FROM parent_search WHERE parent_id = ${ancestorId}
-      ) as "isDescendant"
-    `;
-
-    const result = await this.db.execute(query);
-    return !!result.rows[0]?.isDescendant;
-  }
-
-  async moveLocation(locationId: string, newParentId: string | null) {
-    // 1. Validate node existence (already throws NotFoundException)
-    await this.findOne(locationId);
-
-    // 2. Moving to root
-    if (newParentId === null) {
-      const [updated] = await this.db
-        .update(schema.locations)
-        .set({ parentId: null })
-        .where(eq(schema.locations.id, locationId))
-        .returning();
-      return updated;
-    }
-
-    // 3. Prevent moving to itself
-    if (locationId === newParentId) {
-      throw new BadRequestException('A location cannot be moved inside itself');
-    }
-
-    // 4. Validate new parent existence
-    await this.findOne(newParentId);
-
-    // 5. Prevent cycles
-    const isDescendant = await this.checkIsDescendant(locationId, newParentId);
-    if (isDescendant) {
-      throw new BadRequestException('Invalid move: Target is a descendant of the current location');
-    }
-
-    const [updated] = await this.db
-      .update(schema.locations)
-      .set({ parentId: newParentId })
-      .where(eq(schema.locations.id, locationId))
-      .returning();
-
-    return updated;
+  async moveLocation(id: string, newParentId: string | null) {
+    return this.update(id, { parentId: newParentId });
   }
 
   async getFullPath(locationId: string) {
-    // Verify existence first
+    const userId = RequestContext.getRequiredUserId();
+
     await this.findOne(locationId);
 
+    // CTE recursiva para obtener la ruta hacia la raíz
     const query = sql`
       WITH RECURSIVE location_path AS (
         SELECT id, name, parent_id, 1 as level
         FROM ${schema.locations}
-        WHERE id = ${locationId}
+        WHERE id = ${locationId} AND owner_id = ${userId}
         
         UNION ALL
         
@@ -166,16 +120,61 @@ export class LocationsService {
         FROM ${schema.locations} l
         INNER JOIN location_path lp ON l.id = lp.parent_id
       )
-      SELECT * FROM location_path ORDER BY level DESC
+      SELECT id, name, parent_id as "parentId", level 
+      FROM location_path 
+      ORDER BY level DESC
     `;
 
     const result = await this.db.execute(query);
+    return result.rows;
+  }
 
-    return result.rows as Array<{
-      id: string;
-      name: string;
-      parent_id: string | null;
-      level: number;
-    }>;
+  private async checkIsDescendant(ancestorId: string, potentialDescendantId: string): Promise<boolean> {
+    // Optimización: Buscamos si el ancestorId aparece en la línea ascendente del potencial descendiente
+    const query = sql`
+      WITH RECURSIVE branch AS (
+        SELECT id, parent_id 
+        FROM ${schema.locations} 
+        WHERE id = ${potentialDescendantId}
+        
+        UNION ALL
+        
+        SELECT l.id, l.parent_id
+        FROM ${schema.locations} l
+        INNER JOIN branch b ON l.id = b.parent_id
+      )
+      SELECT EXISTS (
+        SELECT 1 FROM branch WHERE id = ${ancestorId}
+      ) as "isDescendant"
+    `;
+
+    const result = await this.db.execute(query);
+    // En node-postgres el booleano viene directamente en rows[0]
+    return Boolean(result.rows[0]?.isDescendant);
+  }
+
+  private async validateHierarchy(id: string, parentId: string | null, userId: string) {
+    if (parentId === null) return;
+
+    if (id === parentId) {
+      throw new BadRequestException('A location cannot be its own parent');
+    }
+
+    // Usamos la Query API para verificar el padre: más eficiente
+    const targetParent = await this.db.query.locations.findFirst({
+      columns: { id: true },
+      where: and(
+        eq(schema.locations.id, parentId),
+        eq(schema.locations.ownerId, userId)
+      ),
+    });
+
+    if (!targetParent) {
+      throw new NotFoundException(`Target parent location not found or access denied`);
+    }
+
+    if (await this.checkIsDescendant(id, parentId)) {
+      throw new BadRequestException('Invalid hierarchy: target parent is a descendant');
+    }
   }
 }

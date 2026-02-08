@@ -10,5 +10,5 @@ export class CreateLocationDto {
 
     @IsUUID()
     @IsOptional()
-    parentId?: string;
+    parentId?: string | null;
 }

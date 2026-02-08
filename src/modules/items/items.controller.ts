@@ -1,8 +1,8 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, FileTypeValidator, MaxFileSizeValidator, ParseFilePipe, UploadedFile, UseInterceptors } from '@nestjs/common';
-import { ItemsService } from './items.service';
+import { Body, Controller, Delete, FileTypeValidator, Get, MaxFileSizeValidator, Param, ParseFilePipe, Patch, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { CreateItemDto } from './dto/create-item.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { ItemsService } from './items.service';
 
 @Controller('items')
 export class ItemsController {
@@ -37,17 +37,18 @@ export class ItemsController {
   @Patch(':id')
   @UseInterceptors(FileInterceptor('image'))
   update(
-    @Param('id') id: string,
+    @Param('id') itemId: string,
     @Body() updateItemDto: UpdateItemDto,
     @UploadedFile(
       new ParseFilePipe({
+        fileIsRequired: false,
         validators: [
           new MaxFileSizeValidator({ maxSize: 1024 * 1024 * 15 }), // 15MB
           new FileTypeValidator({ fileType: '.(png|jpeg|jpg|webp)' }),
         ]
-      })) image: Express.Multer.File,
+      })) image?: Express.Multer.File,
   ) {
-    return this.itemsService.update(id, updateItemDto, image);
+    return this.itemsService.update(itemId, updateItemDto, image);
   }
 
   @Delete(':id')

@@ -1,7 +1,7 @@
-import { BadRequestException, Inject, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, Inject, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-import { eq, InferSelectModel } from 'drizzle-orm';
+import { and, eq, InferSelectModel } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DRIZZLE } from 'src/db/drizzle.module';
 
@@ -16,6 +16,8 @@ import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as schema from './schemas/images.schema';
+
+import { RequestContext } from 'src/infra/context/request-context';
 
 export type Image = InferSelectModel<typeof schema.images>;
 
@@ -45,7 +47,8 @@ export class ImageStorageService extends QueueEventsHost {
   /**
    * Internal logic to handle file validation, hashing, and physical storage
    */
-  private async processImage(id: string, file: Express.Multer.File) {
+  private async processImage(imageId: string, file: Express.Multer.File) {
+    const userId = RequestContext.getRequiredUserId();
     const imageBuffer = file.buffer;
     // 1. Binary validation for security purposes
     const type = await fileTypeFromBuffer(imageBuffer);
@@ -57,10 +60,34 @@ export class ImageStorageService extends QueueEventsHost {
     try {
       // 2. Path definition and sharding logic
       const fileHash = this.generateFileHash(imageBuffer);
+
+      /*  We look for the hash in the DB. 
+          Using 'columns' to fetch only the ID (more efficient than SELECT *)
+      */
+      const existingImage = await this.db.query.images.findFirst({
+        where: eq(schema.images.hash, fileHash),
+        columns: {
+          hash: true,
+          // thumbPath: true,
+          // storagePath: true
+        }
+      });
+
+      if (existingImage) {
+        /*  Using ConflictException (409) as it better represents 
+            a state conflict with the current server data.
+        */
+       throw new ConflictException('This image has already been uploaded.');
+       /*
+       *  If you want to associate the same image with several products and avoid reprocessing again
+       */
+      //  return { fileHash: existingImage.hash, thumbFilePath: existingImage.thumbPath, mainFilePath: existingImage.storagePath, }
+      }
+
       const shardPath = this.getShardedPath(fileHash);
 
-      const thumbTargetFolder = path.join(this.baseUploadPath, this.THUMB_PATH, shardPath);
-      const uploadTargetFolder = path.join(this.baseUploadPath, this.IMAGES_PATH, shardPath);
+      const thumbTargetFolder = path.join(this.baseUploadPath, userId, this.THUMB_PATH, shardPath);
+      const uploadTargetFolder = path.join(this.baseUploadPath, userId, this.IMAGES_PATH, shardPath);
 
       const thumbFilePath = path.join(thumbTargetFolder, `${fileHash}_thumb.webp`);
       const mainFilePath = path.join(uploadTargetFolder, `${fileHash}.webp`);
@@ -90,7 +117,7 @@ export class ImageStorageService extends QueueEventsHost {
        */
 
       await this.imageQueue.add('process-background-removal', {
-        imageId: id,
+        imageId,
         mainFilePath,
         mainWidth: this.mainWidth,
         thumbFilePath,
@@ -106,6 +133,9 @@ export class ImageStorageService extends QueueEventsHost {
       };
 
     } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
       throw new InternalServerErrorException(error, 'Image Processing Error');
     }
   }
@@ -126,6 +156,7 @@ export class ImageStorageService extends QueueEventsHost {
    * Orchestrates the creation of a new image record
    */
   async saveFile(file: Express.Multer.File): Promise<Image> {
+    const userId = RequestContext.getRequiredUserId();
     const uuidImage = uuidv7();
     // 1. Process and store new physical files
     const { fileHash, thumbFilePath, mainFilePath } = await this.processImage(uuidImage, file);
@@ -137,6 +168,7 @@ export class ImageStorageService extends QueueEventsHost {
       thumbPath: thumbFilePath,
       storagePath: mainFilePath,
       status: 'processing',
+      ownerId: userId
     }).returning();
 
     return newImage;
@@ -156,7 +188,7 @@ export class ImageStorageService extends QueueEventsHost {
     }
 
     // 2. Process and store new physical files
-    const { fileHash, thumbFilePath, mainFilePath } = await this.processImage(imageId, file);
+    const { fileHash, thumbFilePath, mainFilePath } = await this.processImage(oldImage.id, file);
 
     // 3. Update existing database record
     const [updated] = await this.db
@@ -167,7 +199,9 @@ export class ImageStorageService extends QueueEventsHost {
         storagePath: mainFilePath,
         status: 'processing',
       })
-      .where(eq(schema.images.id, imageId))
+      .where(and(
+        eq(schema.images.id, imageId)
+      ))
       .returning();
 
     // 4. Physical cleanup of old files (Asynchronous)
