@@ -1,6 +1,6 @@
 services:
   kloset-db:
-    image: postgres:17-alpine
+    image: pgvector/pgvector:pg18
     container_name: kloset-keeper-db
     restart: always
     environment:
@@ -10,7 +10,16 @@ services:
     ports:
       - "${DB_PORT}:5432"
     volumes:
-      - kloset-db-data:/var/lib/postgresql/data
+      - kloset-db-data:/var/lib/postgresql
+  kloset-valkey:
+    image: valkey/valkey:9.0.1-alpine3.23
+    container_name: kloset-keeper-valkey
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - kloset-valkey-data:/data
 
 volumes:
   kloset-db-data:
+  kloset-valkey-data:

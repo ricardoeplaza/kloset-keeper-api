@@ -4,19 +4,25 @@ import { uuidv7 } from 'uuidv7';
 import { and, eq } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DRIZZLE } from 'src/db/drizzle.module';
+import * as schema from 'src/db/schema';
 
 import { RequestContext } from 'src/infra/context/request-context';
+import { InjectFlowProducer, InjectQueue, OnQueueEvent, QueueEventsHost, QueueEventsListener } from '@nestjs/bullmq';
+import { FlowProducer, Queue } from 'bullmq';
+import { ItemJobsFactory } from './jobs/item-jobs.factory';
 import { CreateItemDto } from './dto/create-item.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
 import { ImageStorageService } from './image-storage.service';
-import * as schema from './schemas/items.schema';
 
 @Injectable()
-export class ItemsService {
+@QueueEventsListener('item-embedding')
+export class ItemsService extends QueueEventsHost {
   constructor(
     @Inject(DRIZZLE) private _db: NodePgDatabase<typeof schema>,
-    private readonly imageStorageService: ImageStorageService
-  ) { }
+    @InjectFlowProducer('item-processing') private readonly itemProcessingProducer: FlowProducer,
+    @InjectQueue('item-embedding') private readonly embeddingQueue: Queue,
+    private readonly imageStorageService: ImageStorageService,
+  ) { super() }
 
   /**
    * Creates a new item and its associated image record
@@ -41,6 +47,14 @@ export class ItemsService {
         .insert(schema.items)
         .values(insertData)
         .returning();
+
+      // 4. Trigger embedding generation
+      await this.itemProcessingProducer.add({
+        ...ItemJobsFactory.generateEmbedding(newItem.id, newItem.name, newItem.notes, itemImage.storagePath),
+        children: [
+          ItemJobsFactory.removeBackground(itemImage.id, itemImage.storagePath, itemImage.thumbPath),
+        ],
+      });
 
       return newItem;
 
@@ -78,28 +92,13 @@ export class ItemsService {
    */
   async update(itemId: string, updateItemDto: UpdateItemDto, file?: Express.Multer.File) {
     const userId = RequestContext.getRequiredUserId();
-    // 1. Handle image replacement if a new file is provided
-    if (file) {
-      const item = await this._db.query.items.findFirst({
-        where: and(
-          eq(schema.items.id, itemId),
-          eq(schema.items.ownerId, userId)
-        )
-      });
 
-      if (!item) throw new NotFoundException(`Item with id ${itemId} not found`);
-
-      // If the item has an associated image record, update it
-      if (file) {
-       await this.imageStorageService.updateFile(item.imageId, file);
-      }
-    }
-
-    // 2. Update item textual data
+    // 1. Update textual data and retrieve the new state in a single query
     const [updatedItem] = await this._db
       .update(schema.items)
       .set({
         ...updateItemDto,
+        embeddingstatus: 'pending',
         updatedAt: new Date()
       })
       .where(
@@ -111,6 +110,31 @@ export class ItemsService {
       .returning();
 
     if (!updatedItem) throw new NotFoundException(`Item with id ${itemId} not found`);
+
+    // 2. DECISION BRIDGE: Determine the processing heavy-lift based on the input
+    if (file) {
+      // HEAVY SCENARIO: New image provided. Trigger full pipeline (Remove BG -> Embedding)
+      const newImageData = await this.imageStorageService.updateFile(updatedItem.imageId, file);
+
+      await this.itemProcessingProducer.add({
+        ...ItemJobsFactory.generateEmbedding(itemId, updatedItem.name, updatedItem.notes, newImageData.storagePath),
+        children: [
+          ItemJobsFactory.removeBackground(updatedItem.imageId, newImageData.storagePath, newImageData.thumbPath),
+        ],
+      });
+    } else {
+      // LIGHT SCENARIO: Only text or metadata changed. Re-run embedding using the existing clean image
+      const currentImage = await this._db.query.images.findFirst({
+        where: eq(schema.images.id, updatedItem.imageId),
+      });
+
+      if (currentImage) {
+        const jobDef = ItemJobsFactory.generateEmbedding(itemId, updatedItem.name, updatedItem.notes, currentImage.storagePath);
+
+        // We add it directly to the queue as there are no children dependencies
+        await this.embeddingQueue.add(jobDef.name, jobDef.data, jobDef.opts);
+      }
+    }
 
     return updatedItem;
   }
@@ -142,5 +166,39 @@ export class ItemsService {
     }
 
     throw new InternalServerErrorException(`Could not remove item ${itemId}`);
+  }
+
+  @OnQueueEvent('completed')
+  async onEmbeddingCompleted(job) {
+
+    const { itemId, embedding, model, refined_by_text } = job.returnvalue;
+    await this._db
+      .update(schema.items)
+      .set({
+        embedding: embedding,
+        embeddingModel: model,
+        embeddingstatus: 'ready',
+        isMultimodal: refined_by_text,
+        updatedAt: new Date()
+      })
+      .where(eq(schema.items.id, itemId));
+
+    console.log(`IA Job ${job.jobId} finished.`);
+  }
+
+  @OnQueueEvent('failed')
+  async onEmbeddingFailed({ jobId, failedReason }: { jobId: string; failedReason: any }) {
+    // 1. Get the full job object using the jobId
+    const job = await this.embeddingQueue.getJob(jobId);
+
+    if (job) {
+      // 2. Access the original data we sent at the beginning
+      const { itemId } = job.data;
+
+      await this._db
+        .update(schema.items)
+        .set({ embeddingstatus: 'failed', })
+        .where(eq(schema.items.id, itemId));
+    }
   }
 }

@@ -77,11 +77,11 @@ export class ImageStorageService extends QueueEventsHost {
         /*  Using ConflictException (409) as it better represents 
             a state conflict with the current server data.
         */
-       throw new ConflictException('This image has already been uploaded.');
-       /*
-       *  If you want to associate the same image with several products and avoid reprocessing again
-       */
-      //  return { fileHash: existingImage.hash, thumbFilePath: existingImage.thumbPath, mainFilePath: existingImage.storagePath, }
+        throw new ConflictException('This image has already been uploaded.');
+        /*
+        *  If you want to associate the same image with several products and avoid reprocessing again
+        */
+        //  return { fileHash: existingImage.hash, thumbFilePath: existingImage.thumbPath, mainFilePath: existingImage.storagePath, }
       }
 
       const shardPath = this.getShardedPath(fileHash);
@@ -112,19 +112,6 @@ export class ImageStorageService extends QueueEventsHost {
           .toFile(mainFilePath)
       ]);
 
-      /**
-       * 5. Queue heavy tasks for background worker (AI Inference + Final Optimization)
-       */
-
-      await this.imageQueue.add('process-background-removal', {
-        imageId,
-        mainFilePath,
-        mainWidth: this.mainWidth,
-        thumbFilePath,
-        thumbWidth: this.thumbWidth
-      }, {
-        removeOnComplete: true,
-      });
 
       return {
         fileHash,
@@ -167,7 +154,7 @@ export class ImageStorageService extends QueueEventsHost {
       hash: fileHash,
       thumbPath: thumbFilePath,
       storagePath: mainFilePath,
-      status: 'processing',
+      status: 'pending',
       ownerId: userId
     }).returning();
 
@@ -197,7 +184,7 @@ export class ImageStorageService extends QueueEventsHost {
         hash: fileHash,
         thumbPath: thumbFilePath,
         storagePath: mainFilePath,
-        status: 'processing',
+        status: 'pending',
       })
       .where(and(
         eq(schema.images.id, imageId)

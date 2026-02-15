@@ -24,7 +24,7 @@ export class ImageProcessor extends WorkerHost {
   private readonly logger = new Logger(ImageProcessor.name);
 
   async process(job: Job<ImageProcessJob>): Promise<any> {
-    const { imageId, mainFilePath, thumbFilePath, thumbWidth } = job.data;
+    const { imageId, mainFilePath, thumbFilePath } = job.data;
 
     this.logger.log(`Starting IA Background Removal for Image: ${imageId}`);
 
@@ -54,7 +54,7 @@ export class ImageProcessor extends WorkerHost {
 
         // Thumbnail: Lower quality for fast gallery loading
         sharp(noBgBuffer)
-          .resize(thumbWidth)
+          .resize(this.configService.get<number>('THUMB_WIDTH'))
           .webp({ quality: 65 })
           .toFile(thumbFilePath),
       ]);
