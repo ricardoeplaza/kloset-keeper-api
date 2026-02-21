@@ -1,5 +1,5 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Logger } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { createReadStream } from 'node:fs';
 import { ConfigService } from '@nestjs/config';
@@ -8,6 +8,11 @@ import axios from 'axios';
 import FormData from 'form-data';
 import sharp from 'sharp';
 
+import { eq } from 'drizzle-orm';
+import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { DRIZZLE } from 'src/db/drizzle.module';
+import * as schema from 'src/db/schema';
+
 interface ImageProcessJob {
   imageId: string;
   mainFilePath: string;
@@ -15,11 +20,11 @@ interface ImageProcessJob {
   thumbWidth: number;
 }
 
-@Processor('image-processing')
+@Processor('remove-background')
 export class ImageProcessor extends WorkerHost {
-  constructor(private readonly configService: ConfigService) {
-    super();
-  }
+  constructor(
+    @Inject(DRIZZLE) private db: NodePgDatabase<typeof schema>,
+    private readonly configService: ConfigService) { super(); }
 
   private readonly logger = new Logger(ImageProcessor.name);
 
@@ -45,7 +50,6 @@ export class ImageProcessor extends WorkerHost {
       const noBgBuffer = Buffer.from(response.data);
 
       // 3. Parallel processing with Sharp
-      // We overwrite existing files with the processed versions (without background)
       await Promise.all([
         // Main Image: High quality/Lossless to preserve clothing details
         sharp(noBgBuffer)
@@ -58,6 +62,11 @@ export class ImageProcessor extends WorkerHost {
           .webp({ quality: 65 })
           .toFile(thumbFilePath),
       ]);
+
+      await this.db
+        .update(schema.images)
+        .set({ status: 'ready' })
+        .where(eq(schema.images.id, imageId));
 
       this.logger.log(`Image ${imageId} processed and saved successfully`);
 
@@ -72,7 +81,13 @@ export class ImageProcessor extends WorkerHost {
   /**
    * Centralized error handling for the worker
    */
-  private handleError(error: any, imageId: string): void {
+  private async handleError(error: any, imageId: string): Promise<void> {
+
+    await this.db
+      .update(schema.images)
+      .set({ status: 'failed', })
+      .where(eq(schema.images.id, imageId));
+
     if (error.response) {
       const detail = error.response.data.toString();
       this.logger.error(`AI Service Error [${imageId}] - Status: ${error.response.status} - Detail: ${detail}`);

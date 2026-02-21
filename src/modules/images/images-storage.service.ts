@@ -5,25 +5,21 @@ import { and, eq, InferSelectModel } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DRIZZLE } from 'src/db/drizzle.module';
 
-import { fileTypeFromBuffer } from 'file-type'; // Para validación binaria
+import { fileTypeFromBuffer } from 'file-type';
 import sharp from 'sharp';
 import { uuidv7 } from 'uuidv7';
-
-import { InjectQueue, OnQueueEvent, QueueEventsHost, QueueEventsListener } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
 
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as schema from './schemas/images.schema';
+import * as schema from 'src/db/schema';
 
 import { RequestContext } from 'src/infra/context/request-context';
 
 export type Image = InferSelectModel<typeof schema.images>;
 
 @Injectable()
-@QueueEventsListener('image-processing')
-export class ImageStorageService extends QueueEventsHost {
+export class ImagesStorageService {
   private readonly THUMB_PATH: string = 'thumbnails';
   private readonly IMAGES_PATH: string = 'images';
 
@@ -34,10 +30,8 @@ export class ImageStorageService extends QueueEventsHost {
 
   constructor(
     @Inject(DRIZZLE) private db: NodePgDatabase<typeof schema>,
-    @InjectQueue('image-processing') private readonly imageQueue: Queue,
     private configService: ConfigService
   ) {
-    super();
     this.baseUploadPath = this.configService.get<string>('UPLOAD_LOCATION', './media');
     this.directoryLevels = this.configService.get<number>('UPLOAD_DIRECTORY_LEVELS', 2);
     this.mainWidth = this.configService.get<number>('IMAGE_WIDTH', 1920);
@@ -50,6 +44,7 @@ export class ImageStorageService extends QueueEventsHost {
   private async processImage(imageId: string, file: Express.Multer.File) {
     const userId = RequestContext.getRequiredUserId();
     const imageBuffer = file.buffer;
+
     // 1. Binary validation for security purposes
     const type = await fileTypeFromBuffer(imageBuffer);
     const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp'];
@@ -67,9 +62,7 @@ export class ImageStorageService extends QueueEventsHost {
       const existingImage = await this.db.query.images.findFirst({
         where: eq(schema.images.hash, fileHash),
         columns: {
-          hash: true,
-          // thumbPath: true,
-          // storagePath: true
+          hash: true
         }
       });
 
@@ -78,10 +71,6 @@ export class ImageStorageService extends QueueEventsHost {
             a state conflict with the current server data.
         */
         throw new ConflictException('This image has already been uploaded.');
-        /*
-        *  If you want to associate the same image with several products and avoid reprocessing again
-        */
-        //  return { fileHash: existingImage.hash, thumbFilePath: existingImage.thumbPath, mainFilePath: existingImage.storagePath, }
       }
 
       const shardPath = this.getShardedPath(fileHash);
@@ -99,7 +88,6 @@ export class ImageStorageService extends QueueEventsHost {
       ]);
 
       // 4. Image processing (Parallelized for performance optimization)
-      // Sharp handles multiple threads internally, making this highly efficient
       await Promise.all([
         sharp(imageBuffer)
           .resize(this.thumbWidth)
@@ -111,7 +99,6 @@ export class ImageStorageService extends QueueEventsHost {
           .webp({ quality: 95, lossless: false })
           .toFile(mainFilePath)
       ]);
-
 
       return {
         fileHash,
@@ -229,30 +216,4 @@ export class ImageStorageService extends QueueEventsHost {
     return true;
   }
 
-  @OnQueueEvent('completed')
-  async onJobCompleted({ jobId, returnvalue }: { jobId: string; returnvalue: any }) {
-    const { imageId } = returnvalue;
-    await this.db
-      .update(schema.images)
-      .set({ status: 'ready' })
-      .where(eq(schema.images.id, imageId));
-
-    console.log(`IA Job ${jobId} finished.`);
-  }
-
-  @OnQueueEvent('failed')
-  async onJobFailed({ jobId, failedReason }: { jobId: string; failedReason: any }) {
-    // 1. Get the full job object using the jobId
-    const job = await this.imageQueue.getJob(jobId);
-
-    if (job) {
-      // 2. Access the original data we sent at the beginning
-      const { imageId } = job.data;
-
-      await this.db
-        .update(schema.images)
-        .set({ status: 'failed', })
-        .where(eq(schema.images.id, imageId));
-    }
-  }
 }

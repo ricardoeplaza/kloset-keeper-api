@@ -8,6 +8,7 @@ import { DrizzleModule } from 'src/db/drizzle.module';
 import { APP_GUARD } from '@nestjs/core';
 import { AuthModule } from './modules/auth/auth.module';
 import { AuthGuard } from './modules/auth/guards/auth.guard';
+import { ImagesModule } from './modules/images/images.module';
 import { ItemsModule } from './modules/items/items.module';
 import { LocationsModule } from './modules/locations/locations.module';
 import { UsersModule } from './modules/users/users.module';
@@ -51,6 +52,7 @@ const envSchema = z.object({
     BullModule.forRoot({ connection: { host: '192.168.14.230', port: 6379, }, }),
     DrizzleModule,
     AuthModule,
+    ImagesModule,
     ItemsModule,
     LocationsModule,
     UsersModule,

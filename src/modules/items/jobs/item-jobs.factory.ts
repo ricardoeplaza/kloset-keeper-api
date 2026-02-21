@@ -3,7 +3,7 @@ export class ItemJobsFactory {
     static removeBackground(imageId: string, mainFilePath: string, thumbFilePath: string) {
         return {
             name: 'remove-background',
-            queueName: 'image-processing',
+            queueName: 'remove-background',
             data: { imageId, mainFilePath, thumbFilePath },
             opts: { jobId: `remove-bg-${imageId}`, attempts: 3 },
         };
@@ -12,7 +12,7 @@ export class ItemJobsFactory {
     static generateEmbedding(itemId, name, notes, mainFilePath?: string | null) {
         return {
             name: 'generate-embedding',
-            queueName: 'item-embedding',
+            queueName: 'generate-embedding',
             data: {
                 itemId,
                 name,
@@ -20,6 +20,19 @@ export class ItemJobsFactory {
                 mainFilePath
             },
             opts: { jobId: `embedding-${itemId}`, attempts: 2 },
+        };
+    }
+
+    static extractColors(itemId: string, mainFilePath: string, thumbFilePath: string) {
+        return {
+            name: 'extract-colors',
+            queueName: 'extract-colors',
+            data: {
+                itemId,
+                thumbFilePath,
+                mainFilePath
+            },
+            opts: { jobId: `extract-colors-${itemId}`, attempts: 2 },
         };
     }
 }

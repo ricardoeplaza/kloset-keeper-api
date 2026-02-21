@@ -1,20 +1,20 @@
-import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
+import { Module } from '@nestjs/common';
 
-import { ImageStorageService } from './image-storage.service';
 import { ItemsController } from './items.controller';
 import { ItemsService } from './items.service';
 
-import { EmbeddingProcessor } from './processors/items-procesing.processor';
-import { ImageProcessor } from './processors/image-procesing.processor';
+import { EmbeddingProcessor } from './processors/generate-embedding.processor';
+import { ImagesStorageService } from '../images/images-storage.service';
 
 @Module({
   imports: [
-    BullModule.registerFlowProducer({ name: 'item-processing', }),
-    BullModule.registerQueue({ name: 'image-processing', }),
-    BullModule.registerQueue({ name: 'item-embedding', }),
+    BullModule.registerFlowProducer({ name: 'item-processing-flow', }),
+    BullModule.registerQueue({ name: 'remove-background', }),
+    BullModule.registerQueue({ name: 'extract-colors', }),
+    BullModule.registerQueue({ name: 'generate-embedding', }),
   ],
   controllers: [ItemsController],
-  providers: [ItemsService, ImageStorageService, ImageProcessor, EmbeddingProcessor],
+  providers: [ItemsService, EmbeddingProcessor, ImagesStorageService],
 })
 export class ItemsModule { }

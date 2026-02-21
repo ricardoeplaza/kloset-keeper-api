@@ -1,10 +1,10 @@
-import { AnyPgColumn, boolean, pgEnum, pgTable, text, timestamp, uuid, varchar, vector } from 'drizzle-orm/pg-core';
+import { AnyPgColumn, boolean, jsonb, pgEnum, pgTable, text, timestamp, uuid, varchar, vector } from 'drizzle-orm/pg-core';
 import { locations } from '../../locations/schemas/location.schema';
 import { users } from '../../users/schemas/users.schema';
-import { images } from './images.schema';
+import { images } from '../../images/schemas/images.schema';
 
 export const categoryEnum = pgEnum('item_category', [
-    'top', 'bottom', 'footwear', 'accessory', 'outerwear'
+  'top', 'bottom', 'footwear', 'accessory', 'outerwear'
 ]);
 
 export const processingStatusEnum = pgEnum('processing_status', [
@@ -17,9 +17,9 @@ export const items = pgTable('items', {
   name: varchar('name', { length: 100 }).notNull(),
   category: categoryEnum('category').notNull(),
   purchaseDate: timestamp('purchase_date'),
-  
+
   // Physical attributes
-  color: text('color').array(),
+  color_palette: jsonb('color_palette').$type<{ group: string, hex: string; percentage: number }[]>(),
   material: text('material').array(),
   size: varchar('size', { length: 20 }),
   notes: text('notes'),
