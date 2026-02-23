@@ -107,7 +107,7 @@ Kloset Keeper uses a non-blocking multimodal pipeline:
 **1. Setup Admin Account**
 
 ```bash
-curl --location 'http://localhost:3000/users/setup' \
+curl --location 'http://localhost:3000/system/setup' \
 --header 'Content-Type: application/json' \
 --data-raw '{
   "name": "Kloset Admin",
@@ -134,7 +134,7 @@ curl --location 'http://localhost:3000/items/' \
 --header 'Authorization: Bearer <YOUR_JWT_TOKEN>' \
 --form 'image=@"/path/to/cloth.webp"' \
 --form 'name="Cloth Name"' \
---form 'category="bottom"'
+--form 'category="bottom_wear"'
 
 ```
 

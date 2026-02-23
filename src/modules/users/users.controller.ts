@@ -9,22 +9,6 @@ import { UsersService } from './users.service';
 export class UsersController {
   constructor(private readonly usersService: UsersService) { }
 
-  @Public()
-  @Post('setup')
-  async setupFirstUser(@Body() createUserDto: CreateUserDto) {
-    const isFirst = await this.usersService.isFirstRun();
-
-    if (!isFirst) {
-      throw new ForbiddenException('Setup already completed. Use admin panel to create users.');
-    }
-
-    // The first user alwais is Admin
-    return this.usersService.create({
-      ...createUserDto,
-      isAdmin: true,
-    });
-  }
-
   @UseGuards(AdminGuard)
   @Post()
   async create(@Body() createUserDto: CreateUserDto, @Req() req: Request) {

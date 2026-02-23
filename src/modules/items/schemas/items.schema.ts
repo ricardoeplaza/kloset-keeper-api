@@ -1,11 +1,8 @@
 import { AnyPgColumn, boolean, jsonb, pgEnum, pgTable, text, timestamp, uuid, varchar, vector } from 'drizzle-orm/pg-core';
+import { categories } from './categories.schema';
 import { locations } from '../../locations/schemas/location.schema';
 import { users } from '../../users/schemas/users.schema';
 import { images } from '../../images/schemas/images.schema';
-
-export const categoryEnum = pgEnum('item_category', [
-  'top', 'bottom', 'footwear', 'accessory', 'outerwear'
-]);
 
 export const processingStatusEnum = pgEnum('processing_status', [
   'pending', 'ready', 'failed'
@@ -15,7 +12,7 @@ export const items = pgTable('items', {
   id: uuid('id').primaryKey().defaultRandom(),
   brand: varchar('brand', { length: 100 }),
   name: varchar('name', { length: 100 }).notNull(),
-  category: categoryEnum('category').notNull(),
+  category: varchar('category_id').references((): AnyPgColumn => categories.name).notNull(),
   purchaseDate: timestamp('purchase_date'),
 
   // Physical attributes

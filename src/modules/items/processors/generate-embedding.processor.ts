@@ -55,7 +55,7 @@ export class EmbeddingProcessor extends WorkerHost {
       }
 
       // 3. Request to AI Service (FastAPI)
-      const { data } = await axios.post(`${this.configService.get<string>('IA_WORKER_BASE_URL')}/generate-embedding`, form, {
+      const { data } = await axios.post(`${this.configService.get<string>('IA_WORKER_BASE_URL')}/embeddings/image`, form, {
         headers: form.getHeaders(),
         maxBodyLength: Infinity,
         timeout: 10000,

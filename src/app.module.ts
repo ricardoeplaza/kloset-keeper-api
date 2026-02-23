@@ -12,6 +12,7 @@ import { ImagesModule } from './modules/images/images.module';
 import { ItemsModule } from './modules/items/items.module';
 import { LocationsModule } from './modules/locations/locations.module';
 import { UsersModule } from './modules/users/users.module';
+import { SystemModule } from './modules/system/system.module';
 
 // Define the schema for your environment variables
 const envSchema = z.object({
@@ -56,6 +57,7 @@ const envSchema = z.object({
     ItemsModule,
     LocationsModule,
     UsersModule,
+    SystemModule,
   ],
   controllers: [],
   providers: [{
