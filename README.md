@@ -8,14 +8,15 @@ An open-source **RESTful API** built with NestJS for advanced garment management
 
 ## 📌 Overview
 
-**Kloset Keeper API** is a robust, self-hosted alternative to closed-source fashion apps like **Acloset**, **Whering**, and **Smart Closet**. Designed for enthusiasts who value data ownership and extensibility, it provides a powerful backend to build custom frontends.
+**Kloset Keeper API** is an open-source, self-hosted alternative to closed-source fashion apps like **Acloset**, **Whering**, and **Smart Closet**. It is designed to provide the foundational infrastructure needed to build sophisticated fashion platforms.
 
 ### Key Features
 
 - **Garment Metadata:** Track brand, color, season, category, and more.
 - **Physical Location:** Organize items by closet, drawer, or storage box.
-- **AI-Powered:** Multimodal processing for vector-based search and tagging.
-- **Asynchronous Pipeline:** Scalable background jobs for image processing.
+- **Automated Ingestion Engine:** A scalable bulk-upload system that handles background removal, color extraction, and semantic categorization in a non-blocking asynchronous pipeline.
+- **Semantic Vector Search:** Deep integration with `pgvector` allows for natural language queries, moving beyond simple keyword matching to true conceptual search.
+- **Localization-Ready Architecture:** Uses a token-based naming system (`auto:[category]:[color]`) to delegate UI rendering to the frontend, ensuring full internationalization support.
 
 ---
 
@@ -31,6 +32,15 @@ An open-source **RESTful API** built with NestJS for advanced garment management
 | **Infrastructure**| Docker & Docker Compose |
 
 ---
+
+### 📦 The AI Processing Pipeline
+
+Kloset Keeper uses a non-blocking multimodal pipeline:
+
+1. **Image Pre-processing:** Automated background removal via U2Net to isolate the garment and improve visual feature extraction.
+2. **Chromatic Analysis:** Identification of dominant color groups to facilitate faceted filtering and naming.
+3. **Multimodal Synthesis:** Fusion of visual features and extracted metadata into a 512-dimension vector space.
+4. **Taxonomic Mapping:** Zero-shot classification against pre-computed category embeddings to ensure consistent organization.
 
 ## 🚀 Getting Started
 
@@ -62,10 +72,10 @@ An open-source **RESTful API** built with NestJS for advanced garment management
 3. **Infrastructure Deployment**
 
    ```bash
-   # Start DB, Redis and Workers
+   # Start DB, Redis, and Workers
    docker-compose up -d
 
-   # IMPORTANT: Manual pgvector activation
+   # IMPORTANT: Manual pgvector activation (replace <db_container_name> with your actual container ID/name)
    docker exec -it <db_container_name> psql -U user -d kloset_db -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
    # Sync Schema
@@ -80,27 +90,6 @@ An open-source **RESTful API** built with NestJS for advanced garment management
    ```
 
 ---
-
-## 🧪 Available Scripts
-
-| Command | Action |
-| --- | --- |
-| `npm run start:dev` | Launch API in watch mode |
-| `npm run db:studio` | GUI to explore your database (Drizzle Studio) |
-| `npm run build` | Compile for production |
-| `npm run lint` | Run ESLint check |
-| `npm run test` | Run unit tests |
-
----
-
-## 🔄 Workflow & AI Processing
-
-Kloset Keeper uses a non-blocking multimodal pipeline:
-
-1. **Ingestion:** NestJS saves the item as `pending`.
-2. **Queue:** BullMQ dispatches a job to the worker.
-3. **Embedding:** FastAPI generates a **512d vector** (Image + Name + Notes).
-4. **Finalization:** The worker updates the status to `ready` and saves the embedding in PostgreSQL.
 
 ### Quick Start Flow (cURL)
 
@@ -132,15 +121,19 @@ curl --location 'http://localhost:3000/auth/login' \
 ```bash
 curl --location 'http://localhost:3000/items/' \
 --header 'Authorization: Bearer <YOUR_JWT_TOKEN>' \
---form 'image=@"/path/to/cloth.webp"' \
---form 'name="Cloth Name"' \
---form 'category="bottom_wear"'
+--form 'image=@"/path/to/cloth.webp"'
 
 ```
 
 ---
 
-## 🤝 Contributing
+### 🤝 Collaborative Development
+
+This project is built for the community. The architecture is strictly decoupled to encourage contributions across different domains:
+
+- **Backend (NestJS):** Refining the core API, database schemas with Drizzle ORM, and BullMQ orchestration.
+- **AI Worker (FastAPI):** Enhancing computer vision models, improving extraction accuracy, or adding new multimodal features.
+- **Frontend Ecosystem:** Developing reference implementations in Angular, React, or mobile frameworks that consume the API.
 
 We strictly follow **[Conventional Commits](https://www.conventionalcommits.org/)**:
 
@@ -149,13 +142,9 @@ We strictly follow **[Conventional Commits](https://www.conventionalcommits.org/
 - `docs:` Documentation
 - `chore:` Maintenance
 
-> 💬 **Want to help?**  
+> 💬 **Want to help?** 
 > This project is in **early development**. If you want to help us build a more sustainable and stylish way to manage clothes, feel free to:
 >
 > - Open an issue to suggest features or report bugs
 > - Submit a pull request with improvements
-> - Help improve documentation or tests  
-
----
-
-Made with ❤️ for the Self-Hoster Community.
+> - Help improve documentation or tests

@@ -1,5 +1,5 @@
-import { Body, Controller, Delete, FileTypeValidator, Get, MaxFileSizeValidator, Param, ParseFilePipe, Patch, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { BadRequestException, Body, Controller, Delete, FileTypeValidator, Get, MaxFileSizeValidator, Param, ParseFilePipe, Patch, Post, UploadedFile, UploadedFiles, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { CreateItemDto } from './dto/create-item.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
 import { ItemsService } from './items.service';
@@ -22,6 +22,15 @@ export class ItemsController {
     @Body() createItemDto: CreateItemDto,
   ) {
     return this.itemsService.create(createItemDto, file);
+  }
+
+  @Post('bulk')
+  @UseInterceptors(FilesInterceptor('files', 50)) // Limit to 50 files per request
+  async uploadBulk(@UploadedFiles() files: Express.Multer.File[]) {
+    if (!files || files.length === 0) {
+      throw new BadRequestException('No files uploaded');
+    }
+    return await this.itemsService.createBulk(files);
   }
 
   @Get()

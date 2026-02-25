@@ -11,8 +11,8 @@ export const processingStatusEnum = pgEnum('processing_status', [
 export const items = pgTable('items', {
   id: uuid('id').primaryKey().defaultRandom(),
   brand: varchar('brand', { length: 100 }),
-  name: varchar('name', { length: 100 }).notNull(),
-  category: varchar('category_id').references((): AnyPgColumn => categories.name).notNull(),
+  name: varchar('name', { length: 100 }),
+  category: varchar('category_id').references((): AnyPgColumn => categories.name),
   purchaseDate: timestamp('purchase_date'),
 
   // Physical attributes
@@ -28,7 +28,6 @@ export const items = pgTable('items', {
   embedding: vector('embedding', { dimensions: 512 }),
   embeddingModel: text('embedding_model'),
   embeddingstatus: processingStatusEnum('embedding_status').notNull().default('pending'),
-  isMultimodal: boolean('is_multimodal').default(false), // if embedding contain 'name' and 'notes'
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

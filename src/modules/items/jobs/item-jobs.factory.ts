@@ -9,7 +9,7 @@ export class ItemJobsFactory {
         };
     }
 
-    static generateEmbedding(itemId, name, notes, mainFilePath?: string | null) {
+    static generateEmbedding(itemId, name, notes, category, mainFilePath?: string | null) {
         return {
             name: 'generate-embedding',
             queueName: 'generate-embedding',
@@ -17,6 +17,7 @@ export class ItemJobsFactory {
                 itemId,
                 name,
                 notes,
+                category,
                 mainFilePath
             },
             opts: { jobId: `embedding-${itemId}`, attempts: 2 },

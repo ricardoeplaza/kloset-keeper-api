@@ -29,7 +29,7 @@ export class ItemsService {
   async create(createItemDto: CreateItemDto, file: Express.Multer.File) {
     const userId = RequestContext.getRequiredUserId();
 
-    // 1. Process and save the physical image first
+    // 1. Save the physical image first
     const itemImage = await this.imageStorageService.saveFile(file);
 
     try {
@@ -49,7 +49,7 @@ export class ItemsService {
 
       // 4. Trigger embedding generation (Remove BG -> Extact Colors -> Embedding)
       await this.itemProcessingFlowProducer.add({
-        ...ItemJobsFactory.generateEmbedding(newItem.id, newItem.name, newItem.notes, itemImage.storagePath),
+        ...ItemJobsFactory.generateEmbedding(newItem.id, newItem.name, newItem.notes, newItem.category, itemImage.storagePath),
         children: [
           {
             ...ItemJobsFactory.extractColors(newItem.id, itemImage.storagePath, itemImage.thumbPath),
@@ -71,6 +71,72 @@ export class ItemsService {
       console.error('Item Registration Error:', error);
       throw new InternalServerErrorException('Failed to register item, operation rolled back.');
     }
+  }
+
+  /**
+   * Handles bulk upload of clothing items.
+   * Creates database records and triggers the asynchronous AI processing pipeline.
+   */
+  async createBulk(files: Express.Multer.File[]) {
+    const userId = RequestContext.getRequiredUserId();
+    const batchId = uuidv7();
+
+    const results = {
+      batchId,
+      total: files.length,
+      successful: 0,
+      failed: 0,
+      itemIds: [] as string[],
+    };
+
+    for (const file of files) {
+      let itemImage;
+      try {
+        // 1. Persist Image to Local Storage first
+        itemImage = await this.imageStorageService.saveFile(file);
+
+        // 2. Database Record Creation (Placeholder state)
+        const insertData = {
+          id: uuidv7(),
+          imageId: itemImage.id,
+          ownerId: userId,
+        };
+
+        // 3. Attempt to persist the item in Postgres
+        const [newItem] = await this._db
+          .insert(schema.items)
+          .values(insertData)
+          .returning();
+
+        // 4. Dispatch to BullMQ Flow
+        await this.itemProcessingFlowProducer.add({
+          ...ItemJobsFactory.generateEmbedding(newItem.id, newItem.name, newItem.notes, newItem.category, itemImage.storagePath),
+          children: [
+            {
+              ...ItemJobsFactory.extractColors(newItem.id, itemImage.storagePath, itemImage.thumbPath),
+              children: [
+                {
+                  ...ItemJobsFactory.removeBackground(itemImage.id, itemImage.storagePath, itemImage.thumbPath),
+                }
+              ]
+            }
+          ]
+        });
+
+        results.successful++;
+        results.itemIds.push(newItem.id);
+
+      } catch (error) {
+        if (itemImage) {
+          await this.imageStorageService.removeFile(itemImage.id);
+        }
+
+        console.error(`[Bulk Error] Failed to process file ${file.originalname}: ${error.message}`);
+        results.failed++;
+      }
+    }
+
+    return results;
   }
 
   async findAll() {
@@ -123,7 +189,7 @@ export class ItemsService {
       const newImageData = await this.imageStorageService.updateFile(updatedItem.imageId, file);
 
       await this.itemProcessingFlowProducer.add({
-        ...ItemJobsFactory.generateEmbedding(updatedItem.id, updatedItem.name, updatedItem.notes, newImageData.storagePath),
+        ...ItemJobsFactory.generateEmbedding(updatedItem.id, updatedItem.name, updatedItem.notes, updatedItem.category, newImageData.storagePath),
         children: [
           {
             ...ItemJobsFactory.extractColors(updatedItem.id, newImageData.storagePath, newImageData.thumbPath),
