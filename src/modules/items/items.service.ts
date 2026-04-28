@@ -142,21 +142,30 @@ export class ItemsService {
   async findAll() {
     const userId = RequestContext.getRequiredUserId();
     if (!userId) throw new UnauthorizedException();
-    return await this._db.select().from(schema.items).where(eq(schema.items.ownerId, userId));
+
+    return await this._db
+      .select()
+      .from(schema.items)
+      .leftJoin(schema.images, eq(schema.items.imageId, schema.images.id))
+      .where(eq(schema.items.ownerId, userId));
   }
 
   async findOne(id: string) {
     const userId = RequestContext.getRequiredUserId();
 
-    const item = await this._db.query.items.findFirst({
-      where: and(
-        eq(schema.items.id, id),
-        eq(schema.items.ownerId, userId)
-      )
-    });
+    const result = await this._db
+      .select()
+      .from(schema.items)
+      .leftJoin(schema.images, eq(schema.items.imageId, schema.images.id))
+      .where(
+        and(
+          eq(schema.items.id, id),
+          eq(schema.items.ownerId, userId),
+        ),
+      );
 
-    if (!item) throw new NotFoundException(`Item with id ${id} not found`);
-    return item;
+    if (!result.length) throw new NotFoundException(`Item with id ${id} not found`);
+    return result[0];
   }
 
   /**

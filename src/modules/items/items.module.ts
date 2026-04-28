@@ -6,6 +6,7 @@ import { ItemsService } from './items.service';
 
 import { EmbeddingProcessor } from './processors/generate-embedding.processor';
 import { ImagesStorageService } from '../images/images-storage.service';
+import { ItemsSearchService } from './items-search.service';
 
 @Module({
   imports: [
@@ -15,6 +16,6 @@ import { ImagesStorageService } from '../images/images-storage.service';
     BullModule.registerQueue({ name: 'generate-embedding', }),
   ],
   controllers: [ItemsController],
-  providers: [ItemsService, EmbeddingProcessor, ImagesStorageService],
+  providers: [ItemsService, EmbeddingProcessor, ImagesStorageService, ItemsSearchService],
 })
 export class ItemsModule { }

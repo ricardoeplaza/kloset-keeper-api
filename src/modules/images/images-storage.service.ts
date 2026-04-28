@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, HttpException, Inject, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, Inject, Injectable, InternalServerErrorException, NotFoundException, StreamableFile } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { and, eq, InferSelectModel } from 'drizzle-orm';
@@ -15,6 +15,7 @@ import * as path from 'path';
 import * as schema from 'src/db/schema';
 
 import { RequestContext } from 'src/infra/context/request-context';
+import { createReadStream } from 'fs';
 
 export type Image = InferSelectModel<typeof schema.images>;
 
@@ -214,6 +215,91 @@ export class ImagesStorageService {
     }
 
     return true;
+  }
+
+  async getImage(id: string) {
+    try {
+      const userId = RequestContext.getRequiredUserId();
+      const existingImage = await this.db.query.images.findFirst({
+        where: and(
+          eq(schema.images.id, id),
+          eq(schema.images.ownerId, userId),
+        ),
+        columns: {
+          storagePath: true
+        },
+      });
+
+      if (!existingImage) {
+        throw new NotFoundException('Imagen no encontrada');
+      }
+
+      try {
+        await fs.access(existingImage.storagePath);
+      } catch {
+        throw new NotFoundException('Archivo físico no encontrado');
+      }
+
+      const fileStream = createReadStream(existingImage.storagePath);
+
+      return new StreamableFile(fileStream, {
+        type: 'image/webp',
+        disposition: 'inline',
+        length: await this.getFileSize(existingImage.storagePath),
+      });
+
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      console.error('Error sirviendo imagen:', error);
+      throw new InternalServerErrorException('Error al servir la imagen');
+    }
+  }
+
+  async getImageThumb(id: string) {
+    try {
+      const userId = RequestContext.getRequiredUserId();
+      const existingImage = await this.db.query.images.findFirst({
+        where: and(
+          eq(schema.images.id, id),
+          eq(schema.images.ownerId, userId),
+        ),
+        columns: {
+          thumbPath: true
+        },
+      });
+
+      if (!existingImage) {
+        throw new NotFoundException('Imagen no encontrada');
+      }
+
+      try {
+        await fs.access(existingImage.thumbPath);
+      } catch {
+        throw new NotFoundException('Archivo físico no encontrado');
+      }
+
+      const fileStream = createReadStream(existingImage.thumbPath);
+
+      return new StreamableFile(fileStream, {
+        type: 'image/webp',
+        disposition: 'inline',
+        length: await this.getFileSize(existingImage.thumbPath),
+      });
+
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      console.error('Error sirviendo thumbnail:', error);
+      throw new InternalServerErrorException('Error al servir el thumbnail');
+    }
+  }
+
+  private async getFileSize(filePath: string): Promise<number> {
+    const stat = await fs.stat(filePath);
+    return stat.size;
   }
 
 }

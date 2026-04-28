@@ -6,6 +6,8 @@ import * as schema from 'src/db/schema';
 import { CreateUserDto } from '../users/dto/create-user.dto';
 import { UsersService } from '../users/users.service';
 import { SystemSetupService } from './system-setup.service';
+import { AuthService } from '../auth/auth.service';
+import { access } from 'fs';
 
 /**
  * Service to manage the general state and configuration of the system.
@@ -14,8 +16,9 @@ import { SystemSetupService } from './system-setup.service';
 export class SystemService {
   constructor(
     @Inject(DRIZZLE) private _db: NodePgDatabase<typeof schema>,
-    private readonly usersService: UsersService,
+    private readonly authService: AuthService,
     private readonly setupService: SystemSetupService,
+    private readonly usersService: UsersService,
   ) { }
 
   /**
@@ -46,16 +49,19 @@ export class SystemService {
       throw new ForbiddenException('Setup already completed. Use admin panel to create users.');
     }
 
-    // 1. Create user. The first user alwais is Admin
+    // 1. Create user. The first user always is Admin
     const admin = await this.usersService.create({
       ...createUserDto,
       isAdmin: true,
     });
 
-    // 2. Trigger category synchronization (just in case)
+    // 2. Autologin
+    const login_token = await this.authService.generateToken(admin)
+
+    // 3. Trigger category synchronization (just in case)
     await this.setupService.initializeCategories();
 
-    return admin;
+    return {...admin, access_token: login_token.access_token };
   }
 
   /**

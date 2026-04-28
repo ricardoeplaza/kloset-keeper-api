@@ -45,7 +45,7 @@ export class LocationsController {
   }
 
   // Endpoint para mover contenedores (ej: Mover mochila a otra casa)
-  @Get(':id/patch')
+  @Get(':id/path')
   breadCrumbLocation(
     @Param('id') id: string
   ) {

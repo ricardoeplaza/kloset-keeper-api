@@ -19,7 +19,7 @@ export class UsersService {
   ) { }
 
   async isFirstRun(): Promise<boolean> {
-    const result = await this.db.select({ count: sql<number>`count(*)` }).from(users);
+    const result = await this.db.select({ count: sql<number>`count(*)` }).from(users).where(eq(users.isAdmin, true));
     return Number(result[0].count) === 0;
   }
 
