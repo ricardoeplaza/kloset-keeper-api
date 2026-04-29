@@ -169,58 +169,87 @@ export class ItemsService {
   }
 
   /**
-   * Updates item metadata and optionally replaces the associated image
+   * Updates item metadata and optionally replaces the associated image.
+   * Only triggers AI re-processing if fields affecting the embedding actually changed.
    */
   async update(itemId: string, updateItemDto: UpdateItemDto, file?: Express.Multer.File) {
     const userId = RequestContext.getRequiredUserId();
 
-    // 1. Update textual data and retrieve the new state in a single query
-    const [updatedItem] = await this._db
-      .update(schema.items)
-      .set({
-        ...updateItemDto,
-        embeddingstatus: 'pending',
-        updatedAt: new Date()
-      })
+    // 1. Retrieve current item state
+    const [currentItem] = await this._db
+      .select()
+      .from(schema.items)
       .where(
         and(
           eq(schema.items.id, itemId),
           eq(schema.items.ownerId, userId)
         )
-      )
+      );
+
+    if (!currentItem) throw new NotFoundException(`Item with id ${itemId} not found`);
+
+    // 2. Detect if AI-relevant fields actually changed
+    const aiRelevantFields = ['name', 'notes', 'category'] as const;
+    const hasAiRelevantChanges = aiRelevantFields.some(
+      field => updateItemDto[field] !== undefined && updateItemDto[field] !== currentItem[field]
+    );
+    const shouldTriggerAi = file || hasAiRelevantChanges;
+
+    // 3. Build the update payload
+    const updatePayload: Partial<typeof schema.items.$inferInsert> = {
+      ...updateItemDto,
+      updatedAt: new Date(),
+    };
+
+    if (shouldTriggerAi) {
+      updatePayload.embeddingstatus = 'pending';
+    }
+
+    // 4. Persist the update
+    const [updatedItem] = await this._db
+      .update(schema.items)
+      .set(updatePayload)
+      .where(eq(schema.items.id, itemId))
       .returning();
 
-    if (!updatedItem) throw new NotFoundException(`Item with id ${itemId} not found`);
+    // 5. Trigger AI pipeline only if needed
+    if (shouldTriggerAi) {
+      if (file) {
+        // HEAVY SCENARIO: New image provided. Trigger full pipeline (Remove BG -> Extract Colors -> Embedding)
+        const newImageData = await this.imageStorageService.updateFile(updatedItem.imageId, file);
+        const jobIdSuffix = Date.now().toString();
 
-    // 2. DECISION BRIDGE: Determine the processing heavy-lift based on the input
-    if (file) {
-      // HEAVY SCENARIO: New image provided. Trigger full pipeline (Remove BG -> Extact Colors -> Embedding)
-      const newImageData = await this.imageStorageService.updateFile(updatedItem.imageId, file);
+        await this.itemProcessingFlowProducer.add({
+          ...ItemJobsFactory.generateEmbedding(updatedItem.id, updatedItem.name, updatedItem.notes, updatedItem.category, newImageData.storagePath, jobIdSuffix),
+          children: [
+            {
+              ...ItemJobsFactory.extractColors(updatedItem.id, newImageData.storagePath, newImageData.thumbPath, jobIdSuffix),
+              children: [
+                {
+                  ...ItemJobsFactory.removeBackground(newImageData.id, newImageData.storagePath, newImageData.thumbPath, jobIdSuffix),
+                }
+              ]
+            }
+          ]
+        });
+      } else {
+        // LIGHT SCENARIO: Only text metadata changed. Re-run embedding using the existing clean image
+        const currentImage = await this._db.query.images.findFirst({
+          where: eq(schema.images.id, updatedItem.imageId),
+        });
 
-      await this.itemProcessingFlowProducer.add({
-        ...ItemJobsFactory.generateEmbedding(updatedItem.id, updatedItem.name, updatedItem.notes, updatedItem.category, newImageData.storagePath),
-        children: [
-          {
-            ...ItemJobsFactory.extractColors(updatedItem.id, newImageData.storagePath, newImageData.thumbPath),
-            children: [
-              {
-                ...ItemJobsFactory.removeBackground(newImageData.id, newImageData.storagePath, newImageData.thumbPath),
-              }
-            ]
-          }
-        ]
-      });
-    } else {
-      // LIGHT SCENARIO: Only text or metadata changed. Re-run embedding using the existing clean image
-      const currentImage = await this._db.query.images.findFirst({
-        where: eq(schema.images.id, updatedItem.imageId),
-      });
+        if (currentImage) {
+          const jobDef = ItemJobsFactory.generateEmbedding(
+            itemId,
+            updatedItem.name,
+            updatedItem.notes,
+            updatedItem.category,
+            currentImage.storagePath,
+            Date.now().toString()
+          );
 
-      if (currentImage) {
-        const jobDef = ItemJobsFactory.generateEmbedding(itemId, updatedItem.name, updatedItem.notes, currentImage.storagePath);
-
-        // We add it directly to the queue as there are no children dependencies
-        await this.embeddingQueue.add(jobDef.name, jobDef.data, jobDef.opts);
+          await this.embeddingQueue.add(jobDef.name, jobDef.data, jobDef.opts);
+        }
       }
     }
 
