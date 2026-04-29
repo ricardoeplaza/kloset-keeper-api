@@ -1,18 +1,12 @@
 import { Type } from 'class-transformer';
-import { IsArray, IsDate, IsEnum, IsNotEmpty, IsOptional, IsString, IsUUID } from 'class-validator';
-
-export enum ItemCategory {
-  TOP = 'top',
-  BOTTOM = 'bottom',
-  FOOTWEAR = 'footwear',
-  ACCESSORY = 'accessory',
-  OUTERWEAR = 'outerwear'
-}
+import { IsArray, IsDate, IsIn, IsNotEmpty, IsOptional, IsString, IsUUID } from 'class-validator';
+import { ITEM_CATEGORIES } from '../../../common/constants/categories-map.constants';
+import type { ItemCategory } from '../../../common/constants/categories-map.constants';
 
 export class CreateItemDto {
   @IsString() @IsOptional() brand?: string;
   @IsString() @IsNotEmpty() name: string;
-  @IsEnum(ItemCategory) @IsNotEmpty() category: ItemCategory;
+  @IsIn(ITEM_CATEGORIES) @IsNotEmpty() category: ItemCategory;
 
   @IsOptional() @Type(() => Date) @IsDate() purchaseDate?: Date;
 

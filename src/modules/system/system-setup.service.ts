@@ -21,10 +21,12 @@ export class SystemSetupService {
   ) { }
 
   /**
-   * Iterates through defined category constants and ensures they are persisted 
-   * in the database with their respective AI-generated embeddings.
-   */
+     * Iterates through defined category constants and ensures they are persisted 
+     * in the database with their respective AI-generated embeddings.
+     */
   async initializeCategories() {
+    const initializedCategories: any[] = []; // Array para recolectar resultados si es necesario
+
     for (const category of WEAR_CATEGORIES) {
       // 1. Check if the category already exists in the database
       const existing = await this._db.query.categories.findFirst({
@@ -40,21 +42,23 @@ export class SystemSetupService {
           const vector = await this.categoriesService.generateTextEmbedding(category.prompt);
 
           // 3. Upsert the category record to maintain consistency
-          const categories = await this._db.insert(schema.categories)
+          const result = await this._db.insert(schema.categories)
             .values({
               name: category.name,
               prompt: category.prompt,
               embedding: vector,
             });
 
-          return categories;
+          initializedCategories.push(result);
 
         } catch (error) {
           this.logger.error(`Failed to initialize category [${category.name}]:`, error.message);
         }
       }
     }
+
     this.logger.log('Category synchronization sequence completed.');
+    return initializedCategories;
   }
 
 }
