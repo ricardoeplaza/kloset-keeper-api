@@ -28,17 +28,15 @@ export class ImageProcessor extends WorkerHost {
 
   private readonly logger = new Logger(ImageProcessor.name);
 
-  async process(job: Job<ImageProcessJob>): Promise<any> {
+  async process(job: Job<ImageProcessJob>): Promise<{ status: string; imageId: string }> {
     const { imageId, mainFilePath, thumbFilePath } = job.data;
 
     this.logger.log(`Starting IA Background Removal for Image: ${imageId}`);
 
     try {
-      // 1. Prepare Form Data for AI Service (FastAPI)
       const form = new FormData();
       form.append('file', createReadStream(mainFilePath));
 
-      // 2. Request to local AI Service
       const response = await axios.post(`${this.configService.get<string>('IA_WORKER_BASE_URL')}/remove-background`, form, {
         headers: {
           ...form.getHeaders(),
@@ -49,14 +47,11 @@ export class ImageProcessor extends WorkerHost {
 
       const noBgBuffer = Buffer.from(response.data);
 
-      // 3. Parallel processing with Sharp
       await Promise.all([
-        // Main Image: High quality/Lossless to preserve clothing details
         sharp(noBgBuffer)
-          .webp({ quality: 80 }) // Near-lossless for maximum detail
+          .webp({ quality: 80 })
           .toFile(mainFilePath),
 
-        // Thumbnail: Lower quality for fast gallery loading
         sharp(noBgBuffer)
           .resize(this.configService.get<number>('THUMB_WIDTH'))
           .webp({ quality: 65 })
@@ -72,29 +67,30 @@ export class ImageProcessor extends WorkerHost {
 
       return { status: 'done', imageId };
 
-    } catch (error) {
-      this.handleError(error, imageId);
+    } catch (error: unknown) {
+      await this.handleError(error, imageId);
       throw error;
     }
   }
 
-  /**
-   * Centralized error handling for the worker
-   */
-  private async handleError(error: any, imageId: string): Promise<void> {
-
+  private async handleError(error: unknown, imageId: string): Promise<void> {
     await this.db
       .update(schema.images)
-      .set({ status: 'failed', })
+      .set({ status: 'failed' })
       .where(eq(schema.images.id, imageId));
 
-    if (error.response) {
-      const detail = error.response.data.toString();
-      this.logger.error(`AI Service Error [${imageId}] - Status: ${error.response.status} - Detail: ${detail}`);
-    } else if (error.request) {
-      this.logger.error(`Network Error [${imageId}] - AI service unreachable at ${this.configService.get<string>('IA_WORKER_BASE_URL')}`);
+    if (error instanceof Error) {
+      const axiosError = error as any;
+      if (axiosError.response) {
+        const detail = axiosError.response.data?.toString() || 'Unknown error';
+        this.logger.error(`AI Service Error [${imageId}] - Status: ${axiosError.response.status} - Detail: ${detail}`);
+      } else if (axiosError.request) {
+        this.logger.error(`Network Error [${imageId}] - AI service unreachable at ${this.configService.get<string>('IA_WORKER_BASE_URL')}`);
+      } else {
+        this.logger.error(`Worker Internal Error [${imageId}] - ${error.message}`);
+      }
     } else {
-      this.logger.error(`Worker Internal Error [${imageId}] - ${error.message}`);
+      this.logger.error(`Worker Internal Error [${imageId}] - Unknown error`);
     }
   }
 }

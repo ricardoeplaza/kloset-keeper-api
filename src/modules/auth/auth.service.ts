@@ -3,6 +3,22 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 
 import { UsersService } from '../users/users.service';
+import { InferSelectModel } from 'drizzle-orm';
+import { users } from '../users/schemas/users.schema';
+
+export type UserWithoutPassword = Omit<InferSelectModel<typeof users>, 'password'>;
+
+export interface TokenPayload {
+  sub: string;
+  isAdmin: boolean;
+}
+
+export interface AuthResponse {
+  name: string;
+  email: string;
+  isAdmin: boolean;
+  access_token: string;
+}
 
 @Injectable()
 export class AuthService {
@@ -11,7 +27,7 @@ export class AuthService {
         private usersService: UsersService,
     ) { }
 
-async validateUser(email: string, pass: string): Promise<any> {
+  async validateUser(email: string, pass: string): Promise<UserWithoutPassword | null> {
     const user = await this.usersService.findByEmail(email);
 
     if (user && await bcrypt.compare(pass, user.password)) {
@@ -20,25 +36,24 @@ async validateUser(email: string, pass: string): Promise<any> {
          * and keep the rest of the user properties in 'result'.
          * This prevents sensitive data from being leaked in the response or token.
          */
-        const { password, ...result } = user;
-        
-        return result;
+      const { password, ...result } = user;
+      return result as UserWithoutPassword;
     }
     
     return null;
-}
+  }
 
-    async generateToken(user: any) {
-        const payload = {
-            sub: user.id,
-            isAdmin: user.isAdmin
-        };
+  async generateToken(user: UserWithoutPassword): Promise<AuthResponse> {
+    const payload: TokenPayload = {
+      sub: user.id,
+      isAdmin: !!user.isAdmin
+    };
 
-        return {
-            name: user.name,
-            email: user.email,
-            isAdmin: user.isAdmin,
-            access_token: await this._jwtService.signAsync(payload)
-        };
-    }
+    return {
+      name: user.name,
+      email: user.email,
+      isAdmin: !!user.isAdmin,
+      access_token: await this._jwtService.signAsync(payload)
+    };
+  }
 }

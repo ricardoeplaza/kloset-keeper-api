@@ -11,6 +11,7 @@ import { eq, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DRIZZLE } from 'src/db/drizzle.module';
 import * as schema from 'src/db/schema';
+import { ItemProcessingGateway, ItemProcessedEvent } from '../gateways/item-processing.gateway';
 
 interface EmbeddingJob {
   itemId: string;
@@ -20,39 +21,45 @@ interface EmbeddingJob {
   mainFilePath: string;
 }
 
+interface ColorPaletteItem {
+  group: string;
+  hex: string;
+  percentage: number;
+}
+
 @Processor('generate-embedding')
 export class EmbeddingProcessor extends WorkerHost {
   private readonly logger = new Logger(EmbeddingProcessor.name);
 
   constructor(
     @Inject(DRIZZLE) private _db: NodePgDatabase<typeof schema>,
-    private readonly configService: ConfigService) {
+    private readonly configService: ConfigService,
+    private readonly itemGateway: ItemProcessingGateway,
+  ) {
     super();
   }
 
-  /**
-   * Processes the embedding generation by fusing visual features with semantic metadata.
-   * If category is missing, it performs a zero-shot classification 
-   * using the pre-computed category vectors in the database.
-   */
-  async process(job: Job<EmbeddingJob>): Promise<any> {
+  async process(job: Job<EmbeddingJob>): Promise<{ status: string; itemId: string; category?: string }> {
     const { itemId, name, notes, category, mainFilePath } = job.data;
 
     this.logger.log(`Starting Feature Extraction (Embedding) for Item: ${itemId}`);
 
+    const itemRecord = await this._db.query.items.findFirst({
+      where: eq(schema.items.id, itemId),
+      columns: { ownerId: true },
+    });
+    const ownerId = itemRecord?.ownerId;
+
     try {
-      // 1. Gather context from child jobs (e.g., color extraction)
       const childrenValues = await job.getChildrenValues();
-      const colorsPalette = Object.values(childrenValues).find(val => Array.isArray(val)) as any[] || [];
+      const colorsPalette = Object.values(childrenValues).find((val): val is ColorPaletteItem[] => Array.isArray(val)) || [];
       const colors = colorsPalette.map(c => c.group).filter(Boolean).join(', ');
 
-      // 2. Build semantic description for multimodal refinement
       const descriptionParts = [category, colors, notes].filter(
-        (part) => part && typeof part === 'string' && part.toLowerCase() !== 'null' && part.trim() !== ''
+        (part): part is string => typeof part === 'string' && part.toLowerCase() !== 'null' && part.trim() !== ''
       );
       const cleanDescription = descriptionParts.length > 0 ? descriptionParts.join(' ').trim() : null;
 
-      // 3. Prepare Multipart request for the FastAPI AI Worker
       const form = new FormData();
       form.append('file', createReadStream(mainFilePath));
 
@@ -61,7 +68,6 @@ export class EmbeddingProcessor extends WorkerHost {
         this.logger.debug(`[AI Context] Refinement Text: "${cleanDescription}"`);
       }
 
-      // 4. Execute remote inference
       const { data } = await axios.post(
         `${this.configService.get<string>('IA_WORKER_BASE_URL')}/embeddings/image`,
         form,
@@ -75,8 +81,6 @@ export class EmbeddingProcessor extends WorkerHost {
       const { embedding, model } = data;
       let categoryMatch = '';
 
-      // 5. Semantic Classification (Bulk Upload Logic)
-      // If no category was provided, find the closest one in the vector space
       if (!category) {
         const [bestMatch] = await this._db
           .select({ name: schema.categories.name })
@@ -90,13 +94,14 @@ export class EmbeddingProcessor extends WorkerHost {
         }
       }
 
-      // 6. Persistence
+      const finalName = name ? name : this.getTemplateName(categoryMatch, colorsPalette);
+      const finalCategory = category ? category : categoryMatch;
+
       await this._db
         .update(schema.items)
         .set({
-          // Fallback name logic: User Provided > AI Predicted + Colors
-          name: name ? name : this.getTemplateName(categoryMatch, colorsPalette),
-          category: category ? category : categoryMatch,
+          name: finalName,
+          category: finalCategory,
           embedding: embedding,
           embeddingModel: model,
           embeddingstatus: 'ready',
@@ -106,37 +111,57 @@ export class EmbeddingProcessor extends WorkerHost {
 
       this.logger.log(`[Success] Processed Item: ${itemId}`);
 
-      return { status: 'done', itemId, category: category || categoryMatch };
+      if (ownerId) {
+        const eventData: ItemProcessedEvent = {
+          itemId,
+          status: 'ready',
+          name: finalName,
+          category: finalCategory,
+          color_palette: colorsPalette,
+          embeddingModel: model,
+        };
+        this.itemGateway.emitToUser(ownerId, 'item:processed', eventData);
+      }
 
-    } catch (error) {
-      this.handleError(error, itemId);
+      return { status: 'done', itemId, category: finalCategory };
+
+    } catch (error: unknown) {
+      await this.handleError(error, itemId);
+      
+      if (ownerId) {
+        this.itemGateway.emitToUser(ownerId, 'item:processed', {
+          itemId,
+          status: 'failed',
+        });
+      }
+
       throw error;
     }
   }
 
-  private getTemplateName(category, colorsPalette) {
-    const firstColor = colorsPalette[0].group.toLowerCase() || 'unknown';
-
+  private getTemplateName(category: string, colorsPalette: ColorPaletteItem[]) {
+    const firstColor = colorsPalette[0]?.group?.toLowerCase() || 'unknown';
     return `auto:${category}:${firstColor}`;
   }
 
-  /**
-   * Centralized error handling for the embedding worker
-   */
-  private async handleError(error: any, itemId: string): Promise<void> {
-
+  private async handleError(error: unknown, itemId: string): Promise<void> {
     await this._db
       .update(schema.items)
-      .set({ embeddingstatus: 'failed', })
+      .set({ embeddingstatus: 'failed' })
       .where(eq(schema.items.id, itemId));
 
-    if (error.response) {
-      const detail = error.response.data?.toString() || 'Unknown error';
-      this.logger.error(`AI Embedding Service Error [${itemId}] - Status: ${error.response.status} - Detail: ${detail}`);
-    } else if (error.request) {
-      this.logger.error(`Network Error [${itemId}] - AI service unreachable at ${this.configService.get<string>('IA_WORKER_BASE_URL')}`);
+    if (error instanceof Error) {
+      const axiosError = error as any;
+      if (axiosError.response) {
+        const detail = axiosError.response.data?.toString() || 'Unknown error';
+        this.logger.error(`AI Embedding Service Error [${itemId}] - Status: ${axiosError.response.status} - Detail: ${detail}`);
+      } else if (axiosError.request) {
+        this.logger.error(`Network Error [${itemId}] - AI service unreachable at ${this.configService.get<string>('IA_WORKER_BASE_URL')}`);
+      } else {
+        this.logger.error(`Worker Internal Error [${itemId}] - ${error.message}`);
+      }
     } else {
-      this.logger.error(`Worker Internal Error [${itemId}] - ${error.message}`);
+      this.logger.error(`Worker Internal Error [${itemId}] - Unknown error`);
     }
   }
 }

@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { Logger, UnauthorizedException } from '@nestjs/common';
 import { AsyncLocalStorage } from 'async_hooks';
 
 /**
@@ -10,13 +10,8 @@ export interface UserContext {
     isAdmin: boolean;
 }
 
-/**
- * Utility class to manage request-scoped context using AsyncLocalStorage.
- * This allows retrieving user information anywhere in the call stack
- * without explicit dependency injection or parameter passing.
- */
 export class RequestContext {
-    // Static instance of AsyncLocalStorage to hold UserContext
+    private static readonly logger = new Logger(RequestContext.name);
     private static storage = new AsyncLocalStorage<UserContext>();
 
     /**
@@ -25,8 +20,7 @@ export class RequestContext {
      * @param next The callback function (usually the next middleware/handler).
      */
     static set(context: UserContext, next: () => void) {
-        // Log initialization for debugging purposes
-        console.log('Executing context set', context);
+        this.logger.debug('Executing context set', context);
         this.storage.run(context, next);
     }
 

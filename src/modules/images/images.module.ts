@@ -5,9 +5,12 @@ import { ImagesColorsProcessor } from './processors/extract-color.processor';
 import { ImageProcessor } from './processors/remove-background.processor';
 import { ImagesController } from './images.controller';
 import { ImagesStorageService } from './images-storage.service';
+import { ImagesRepository } from './repositories/images.repository';
 
 @Module({
   controllers: [ImagesController],
-  providers: [ImagesColorsService, ImageProcessor, ImagesColorsProcessor, ImagesStorageService],
+  providers: [ImagesColorsService, ImageProcessor, ImagesColorsProcessor, ImagesStorageService, ImagesRepository],
+  exports: [ImagesStorageService],
 })
 export class ImagesModule {}
+

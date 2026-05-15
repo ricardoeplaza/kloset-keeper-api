@@ -1,8 +1,8 @@
 export const WEAR_CATEGORIES = [
     // --- top_wear ---
-    { name: 'formal_long_sleeve_shirts', prompt: 'A photo of a formal long-sleeved dress shirt with buttoned cuffs and a stiff collar' },
-    { name: 'polo_shirts', prompt: 'A photo of a polo shirt with a soft collar and short placket with buttons' },
-    { name: 't_shirts', prompt: 'A photo of a plain cotton t-shirt or crew neck tee' },
+    { name: 'long_sleeve_shirts', prompt: 'A photo of a long-sleeved button-up shirt with a structured collar and full-length buttons, whether plain or patterned' },
+    { name: 'polo_shirts', prompt: 'A photo of a short-sleeved polo shirt with a ribbed collar, a short buttoned placket, and piqué fabric texture, distinct from a plain t-shirt' },
+    { name: 't_shirts', prompt: 'A photo of a casual cotton t-shirt with a simple crew neck and no buttons' },
     { name: 'knitwear', prompt: 'A photo of a wool sweater, cardigan or knitted jumper' },
     { name: 'hoodies_sweatshirts', prompt: 'A photo of a hoodie with a hood or a casual cotton sweatshirt' },
 

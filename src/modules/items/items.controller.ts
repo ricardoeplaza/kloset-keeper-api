@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, FileTypeValidator, Get, MaxFileSizeValidator, Param, ParseFilePipe, ParseUUIDPipe, Patch, Post, Query, UploadedFile, UploadedFiles, UseInterceptors, } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, FileTypeValidator, Get, MaxFileSizeValidator, Param, ParseFilePipe, ParseUUIDPipe, Patch, Post, Query, UploadedFile, UploadedFiles, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { CreateItemDto } from './dto/create-item.dto';
 import { SearchItemsDto } from './dto/search-items.dto';
@@ -19,8 +19,6 @@ export class ItemsController {
     private readonly itemsSearchService: ItemsSearchService,
   ) {}
 
-  // --- STANDARD CRUD OPERATIONS ---
-
   @Post()
   @UseInterceptors(FileInterceptor('image'))
   async create(
@@ -40,23 +38,12 @@ export class ItemsController {
 
   @Get()
   async findAll() {
-    const items = await this.itemsService.findAll();
-    return items.map(item => this.transformItemResponse(item));
+    return this.itemsService.findAll();
   }
 
   @Get(':id')
   async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    const item = await this.itemsService.findOne(id);
-    return this.transformItemResponse(item);
-  }
-
-  private transformItemResponse(row: { items: any; images: any }) {
-    const { embedding, embeddingModel, ownerId, imageId, ...rest } = row.items;
-    return {
-      ...rest,
-      storage_path: `/images/${imageId}`,
-      thumb_path: `/images/${imageId}/thumb`,
-    };
+    return this.itemsService.findOne(id);
   }
 
   @Patch(':id')
@@ -83,45 +70,23 @@ export class ItemsController {
     return this.itemsService.remove(id);
   }
 
-  // --- ADVANCED SEARCH & DISCOVERY ---
-
-  /**
-   * Complex search: SQL filters + JSONB + Vector Similarity
-   */
   @Post('search')
   async advancedSearch(@Body() searchDto: SearchItemsDto) {
-    const results = await this.itemsSearchService.search(searchDto);
-    return results.map(row => this.transformItemResponse(row));
+    return this.itemsSearchService.search(searchDto);
   }
 
-  /**
-   * UI Facets: Returns metadata counts for filtering (categories, colors, brands)
-   */
   @Get('facets')
   async getFacets() {
     return this.itemsSearchService.getSearchFacets();
   }
 
-  /**
-   * Recommendation: Finds nearest items in the vector space
-   */
   @Get(':id/similar')
   async getSimilarItems(
     @Param('id', ParseUUIDPipe) id: string,
     @Query('limit') limit: number = 5,
   ) {
-    const results = await this.itemsSearchService.findSimilar(id, limit);
-    return results.map((item: any) => {
-      const { imageId, ...rest } = item;
-      return {
-        ...rest,
-        storage_path: imageId ? `/images/${imageId}` : null,
-        thumb_path: imageId ? `/images/${imageId}/thumb` : null,
-      };
-    });
+    return this.itemsSearchService.findSimilar(id, limit);
   }
-
-  // --- BULK OPERATIONS ---
 
   @Post('bulk')
   @UseInterceptors(FilesInterceptor('files', 50))

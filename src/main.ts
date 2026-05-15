@@ -1,9 +1,17 @@
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
+import { ConfigService } from '@nestjs/config';
 import { ValidationPipe } from '@nestjs/common';
+import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { cors: true });
+  const app = await NestFactory.create(AppModule);
+  const configService = app.get(ConfigService);
+
+  const corsOrigin = configService.get<string>('CORS_ORIGIN', 'http://localhost:3000');
+  app.enableCors({
+    origin: corsOrigin,
+    credentials: true,
+  });
 
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,            // Strip properties that do not have any decorators in the DTO

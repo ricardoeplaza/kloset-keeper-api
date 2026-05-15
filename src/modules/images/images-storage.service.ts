@@ -1,9 +1,6 @@
-import { BadRequestException, ConflictException, HttpException, Inject, Injectable, InternalServerErrorException, NotFoundException, StreamableFile } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, Injectable, InternalServerErrorException, Logger, NotFoundException, StreamableFile } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-import { and, eq, InferSelectModel } from 'drizzle-orm';
-import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { DRIZZLE } from 'src/db/drizzle.module';
 
 import { fileTypeFromBuffer } from 'file-type';
 import sharp from 'sharp';
@@ -14,13 +11,16 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as schema from 'src/db/schema';
 
-import { RequestContext } from 'src/infra/context/request-context';
+import { InferSelectModel } from 'drizzle-orm';
 import { createReadStream } from 'fs';
+import { RequestContext } from 'src/infra/context/request-context';
+import { ImagesRepository } from './repositories/images.repository';
 
 export type Image = InferSelectModel<typeof schema.images>;
 
 @Injectable()
 export class ImagesStorageService {
+  private readonly logger = new Logger(ImagesStorageService.name);
   private readonly THUMB_PATH: string = 'thumbnails';
   private readonly IMAGES_PATH: string = 'images';
 
@@ -30,7 +30,7 @@ export class ImagesStorageService {
   private readonly thumbWidth: number;
 
   constructor(
-    @Inject(DRIZZLE) private db: NodePgDatabase<typeof schema>,
+    private readonly imagesRepository: ImagesRepository,
     private configService: ConfigService
   ) {
     this.baseUploadPath = this.configService.get<string>('UPLOAD_LOCATION', './media');
@@ -46,7 +46,6 @@ export class ImagesStorageService {
     const userId = RequestContext.getRequiredUserId();
     const imageBuffer = file.buffer;
 
-    // 1. Binary validation for security purposes
     const type = await fileTypeFromBuffer(imageBuffer);
     const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp'];
     if (!type || !allowedMimeTypes.includes(type.mime)) {
@@ -54,23 +53,11 @@ export class ImagesStorageService {
     }
 
     try {
-      // 2. Path definition and sharding logic
       const fileHash = this.generateFileHash(imageBuffer);
 
-      /*  We look for the hash in the DB. 
-          Using 'columns' to fetch only the ID (more efficient than SELECT *)
-      */
-      const existingImage = await this.db.query.images.findFirst({
-        where: eq(schema.images.hash, fileHash),
-        columns: {
-          hash: true
-        }
-      });
+      const existingImage = await this.imagesRepository.findByHash(fileHash);
 
       if (existingImage) {
-        /*  Using ConflictException (409) as it better represents 
-            a state conflict with the current server data.
-        */
         throw new ConflictException('This image has already been uploaded.');
       }
 
@@ -82,13 +69,11 @@ export class ImagesStorageService {
       const thumbFilePath = path.join(thumbTargetFolder, `${fileHash}_thumb.webp`);
       const mainFilePath = path.join(uploadTargetFolder, `${fileHash}.webp`);
 
-      // 3. Ensure directory structure exists (Parallelized)
       await Promise.all([
         fs.mkdir(thumbTargetFolder, { recursive: true }),
         fs.mkdir(uploadTargetFolder, { recursive: true })
       ]);
 
-      // 4. Image processing (Parallelized for performance optimization)
       await Promise.all([
         sharp(imageBuffer)
           .resize(this.thumbWidth)
@@ -133,18 +118,16 @@ export class ImagesStorageService {
   async saveFile(file: Express.Multer.File): Promise<Image> {
     const userId = RequestContext.getRequiredUserId();
     const uuidImage = uuidv7();
-    // 1. Process and store new physical files
     const { fileHash, thumbFilePath, mainFilePath } = await this.processImage(uuidImage, file);
 
-    // 2. Database persistence
-    const [newImage] = await this.db.insert(schema.images).values({
+    const [newImage] = await this.imagesRepository.create({
       id: uuidImage,
       hash: fileHash,
       thumbPath: thumbFilePath,
       storagePath: mainFilePath,
       status: 'pending',
       ownerId: userId
-    }).returning();
+    });
 
     return newImage;
   }
@@ -153,40 +136,28 @@ export class ImagesStorageService {
    * Orchestrates the replacement of an existing image's content
    */
   async updateFile(imageId: string, file: Express.Multer.File): Promise<Image> {
-    // 1. Verify existence before consuming resources
-    const oldImage = await this.db.query.images.findFirst({
-      where: eq(schema.images.id, imageId),
-    });
+    const oldImage = await this.imagesRepository.findById(imageId);
 
     if (!oldImage) {
       throw new NotFoundException(`Image record ${imageId} not found`);
     }
 
-    // 2. Process and store new physical files
     const { fileHash, thumbFilePath, mainFilePath } = await this.processImage(oldImage.id, file);
 
-    // 3. Update existing database record
-    const [updated] = await this.db
-      .update(schema.images)
-      .set({
-        hash: fileHash,
-        thumbPath: thumbFilePath,
-        storagePath: mainFilePath,
-        status: 'pending',
-      })
-      .where(and(
-        eq(schema.images.id, imageId)
-      ))
-      .returning();
+    const [updated] = await this.imagesRepository.update(imageId, {
+      hash: fileHash,
+      thumbPath: thumbFilePath,
+      storagePath: mainFilePath,
+      status: 'pending',
+    });
 
-    // 4. Physical cleanup of old files (Asynchronous)
     try {
       await Promise.all([
         oldImage.thumbPath ? fs.rm(oldImage.thumbPath, { force: true }) : null,
         oldImage.storagePath ? fs.rm(oldImage.storagePath, { force: true }) : null,
       ]);
-    } catch (error) {
-      console.error(`Post-update cleanup failed for ${imageId}:`, error);
+    } catch (error: unknown) {
+      this.logger.error(`Post-update cleanup failed for ${imageId}:`, error);
     }
 
     return updated;
@@ -196,10 +167,7 @@ export class ImagesStorageService {
    * Removes image record and triggers physical file deletion
    */
   async removeFile(id: string): Promise<boolean> {
-    const [deleted] = await this.db
-      .delete(schema.images)
-      .where(eq(schema.images.id, id))
-      .returning();
+    const [deleted] = await this.imagesRepository.delete(id);
 
     if (!deleted) {
       throw new NotFoundException(`Image with ID ${id} not found`);
@@ -210,8 +178,8 @@ export class ImagesStorageService {
         deleted.thumbPath ? fs.rm(deleted.thumbPath, { force: true }) : Promise.resolve(),
         deleted.storagePath ? fs.rm(deleted.storagePath, { force: true }) : Promise.resolve()
       ]);
-    } catch (error) {
-      console.error(`Cleanup failed for image ${id}:`, error);
+    } catch (error: unknown) {
+      this.logger.error(`Cleanup failed for image ${id}:`, error);
     }
 
     return true;
@@ -220,24 +188,16 @@ export class ImagesStorageService {
   async getImage(id: string) {
     try {
       const userId = RequestContext.getRequiredUserId();
-      const existingImage = await this.db.query.images.findFirst({
-        where: and(
-          eq(schema.images.id, id),
-          eq(schema.images.ownerId, userId),
-        ),
-        columns: {
-          storagePath: true
-        },
-      });
+      const existingImage = await this.imagesRepository.findById(id);
 
-      if (!existingImage) {
-        throw new NotFoundException('Imagen no encontrada');
+      if (!existingImage || existingImage.ownerId !== userId) {
+        throw new NotFoundException('Image not found');
       }
 
       try {
         await fs.access(existingImage.storagePath);
       } catch {
-        throw new NotFoundException('Archivo físico no encontrado');
+        throw new NotFoundException('Physical file not found');
       }
 
       const fileStream = createReadStream(existingImage.storagePath);
@@ -252,32 +212,24 @@ export class ImagesStorageService {
       if (error instanceof NotFoundException) {
         throw error;
       }
-      console.error('Error sirviendo imagen:', error);
-      throw new InternalServerErrorException('Error al servir la imagen');
+      this.logger.error('Error serving image:', error);
+      throw new InternalServerErrorException('Error serving image');
     }
   }
 
   async getImageThumb(id: string) {
     try {
       const userId = RequestContext.getRequiredUserId();
-      const existingImage = await this.db.query.images.findFirst({
-        where: and(
-          eq(schema.images.id, id),
-          eq(schema.images.ownerId, userId),
-        ),
-        columns: {
-          thumbPath: true
-        },
-      });
+      const existingImage = await this.imagesRepository.findById(id);
 
-      if (!existingImage) {
-        throw new NotFoundException('Imagen no encontrada');
+      if (!existingImage || existingImage.ownerId !== userId) {
+        throw new NotFoundException('Image not found');
       }
 
       try {
         await fs.access(existingImage.thumbPath);
       } catch {
-        throw new NotFoundException('Archivo físico no encontrado');
+        throw new NotFoundException('Physical file not found');
       }
 
       const fileStream = createReadStream(existingImage.thumbPath);
@@ -292,8 +244,8 @@ export class ImagesStorageService {
       if (error instanceof NotFoundException) {
         throw error;
       }
-      console.error('Error sirviendo thumbnail:', error);
-      throw new InternalServerErrorException('Error al servir el thumbnail');
+      this.logger.error('Error serving thumbnail:', error);
+      throw new InternalServerErrorException('Error serving thumbnail');
     }
   }
 
@@ -301,5 +253,4 @@ export class ImagesStorageService {
     const stat = await fs.stat(filePath);
     return stat.size;
   }
-
 }
